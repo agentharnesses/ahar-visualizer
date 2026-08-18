@@ -295,10 +295,10 @@ function renderHtml(nodes: VizNode[]): string {
     const cy = depth.get(n.id) * (SIZE + V_GAP);
     const midY = (py + cy) / 2;
     const d = 'M ' + px + ' ' + py + ' C ' + px + ' ' + midY + ', ' + cx + ' ' + midY + ', ' + cx + ' ' + cy;
-    const glowPath = el('path', { class: 'edge-glow', d, filter: 'url(#glowBlur)' });
+    const glowPath = el('path', { class: 'edge-glow', 'data-child-id': n.id, d, filter: 'url(#glowBlur)' });
     edgeGlowLayer.appendChild(glowPath);
     edgeGlowById.set(n.id, glowPath);
-    edgeLayer.appendChild(el('path', { class: 'edge', d }));
+    edgeLayer.appendChild(el('path', { class: 'edge', 'data-child-id': n.id, d }));
   }
 
   // Nodes
@@ -369,19 +369,26 @@ function renderHtml(nodes: VizNode[]): string {
     if (msg.type === 'step') {
       currentStep = msg.step;
       for (const fp of msg.filePaths || []) {
-        // Mark the touched node fresh, then walk up and mark every ancestor
-        // fresh too (same step). Without this, only files with their own
-        // node (e.g. a leaf's SKILL.md) would ever register — their
-        // containing directory would stay dark unless a *folded* file
-        // (HARNESS.md/routing) happened to be read instead, which resolves
-        // up to the directory only because it has no node of its own. That
-        // asymmetry is exactly the bug: reading a skill's descriptor should
-        // light up the skill, not just an easy-to-miss leaf node.
-        let resolved = resolveToNodeId(fp);
-        while (resolved) {
+        // Mark the touched node fresh, plus its immediate containing
+        // directory (one hop up), same step. The one-hop part matters for
+        // files that keep their own node — e.g. a leaf's SKILL.md — because
+        // without it, only that small file node would ever light up, never
+        // the leaf directory it describes; a folded file (HARNESS.md/
+        // routing) doesn't have this problem since resolveToNodeId already
+        // has to walk up to *its* container to find any node at all.
+        //
+        // Deliberately NOT walking further up than one hop: freshness has
+        // to stay something a node earns from an actual touch (its own, or
+        // its immediate contents'), not something that leaks all the way to
+        // root and back down every unrelated sibling subtree's edges. The
+        // "go up the tree" effect the edge-glow rule below produces is real,
+        // but it only chains through ancestors that are independently
+        // fresh — from their *own* one-hop touches — not synthetically.
+        const resolved = resolveToNodeId(fp);
+        if (resolved) {
           lastTouchedStep.set(resolved, currentStep);
-          const n = byId.get(resolved);
-          resolved = n ? n.parentId : null;
+          const parentId = byId.get(resolved)?.parentId;
+          if (parentId) lastTouchedStep.set(parentId, currentStep);
         }
       }
       updateGlow();

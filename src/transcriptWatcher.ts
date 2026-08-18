@@ -19,6 +19,7 @@ export class TranscriptWatcher {
   private offset = 0
   private carry = ''
   private step = 0
+  private watcherStartMs = 0
 
   constructor(
     private readonly rootPath: string,
@@ -26,6 +27,17 @@ export class TranscriptWatcher {
   ) {}
 
   start(): void {
+    // Only ever follow sessions created after this watcher started — a repo
+    // can easily have more than one `claude` session writing into the same
+    // project directory at once (e.g. the session actively developing this
+    // extension, plus whatever session you start in the Extension
+    // Development Host's own integrated terminal to test it). Picking
+    // "whichever file has the latest mtime" is unusable in that situation:
+    // a long-running, continuously-active session's mtime wins essentially
+    // always, permanently starving out a newer session someone opened to
+    // actually test with. Scoping to "created since I started watching"
+    // makes the watcher track the session that belongs to *this* window.
+    this.watcherStartMs = Date.now()
     this.tick()
     this.timer = setInterval(() => this.tick(), 400)
   }
@@ -52,6 +64,8 @@ export class TranscriptWatcher {
       const full = path.join(this.projectDir(), name)
       try {
         const stat = fs.statSync(full)
+        const birth = stat.birthtimeMs || stat.ctimeMs
+        if (birth < this.watcherStartMs) continue // predates this watcher; not ours to follow
         if (stat.mtimeMs > latestMtime) {
           latestMtime = stat.mtimeMs
           latest = full
