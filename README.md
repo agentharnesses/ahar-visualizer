@@ -6,22 +6,30 @@ navigation against the harness/sub-harness structure it's exploring.
 
 ## Status: MVP
 
-Two ways to look at a workspace's harness structure, both using detection logic ported by
+Activating the extension in a workspace opens one thing: a large panel beside the editor
+with a node-link diagram of the whole tree (directory/file classification logic ported by
 hand from the `agent-harnesses` skill's `.harnessleaf`/`.leaf-detectors` conventions in the
-`toprope-agentdev` meta-repo:
+`toprope-agentdev` meta-repo). No sidebar view — the panel *is* the extension, built from
+whichever folder is open as the workspace root.
 
-- **"Harness Structure" tree view** (Explorer sidebar) — the workspace directory tree with
-  `HARNESS.md`/routing/leaf files distinguished by icon, plus a "Flatten Harnesses" toggle
-  to collapse down to just the harness-relevant nodes.
-- **"Open Tree Visualization"** (command, or the button in the tree view's title bar) — opens
-  a large panel beside the editor with a literal node-link diagram of the whole tree: every
-  directory and file as a node, root at top branching downward. Folders that are a harness
-  root (`HARNESS.md`) or contain a routing index (`SKILLS.md`, etc.) are colored differently
-  from plain folders; leaf directories and their descriptor files get their own color too.
-  Pan by dragging or two-finger scroll, zoom with Ctrl/Cmd+scroll or the +/− buttons, click a
-  node for details (path, kind, child count), double-click a file to open it. The panel is a
-  normal editor tab, so closing it is just closing the tab; reopening it via the command
-  re-creates it.
+- **Shapes, not labels.** Every directory and file is a small shape (square = directory,
+  circle = file); no inline text, to keep large trees compact. `HARNESS.md` and routing-index
+  files (`SKILLS.md`, etc.) don't get their own node — they just color their parent directory.
+  Harness roots, routing directories, and leaves each get their own color; anything not
+  harness-standard-relevant renders dimmed.
+- **Navigation.** Pan by dragging or two-finger scroll, zoom with Ctrl/Cmd+scroll or the
+  +/− buttons, hover a node for a lightweight name/kind tooltip, click for a persistent
+  details panel (path, kind, child count, open-file button), double-click a file to open it.
+  The panel is a normal editor tab — closing it is just closing the tab; the
+  `aharVsvis: Open Tree Visualization` command re-creates it, and its own refresh button
+  (⟳) re-scans the directory without needing the command palette.
+- **Live glow.** While a `claude` CLI session runs in the same workspace, the extension
+  passively tails its transcript JSONL (`~/.claude/projects/<slug>/*.jsonl`, no hooks setup
+  needed) and lights up nodes as Claude reads/edits/writes them. Glow fades — but based on
+  *conversation growth* (transcript lines observed), not wall-clock time, so it tracks how
+  "fresh" something is in the conversation's own frame rather than a real-time timer. Edge
+  glow equals the freshness of the node above it, so a whole ancestor chain lights up when
+  any of its members are still fresh, not just the exact node touched.
 
 ```
 npm install
@@ -30,9 +38,11 @@ npm run compile
 # in the Extension Development Host
 ```
 
-Verified in a live Extension Development Host against the `toprope-agentdev` meta-repo:
-both views render correctly, node classification (harness-root/routing/leaf) checks out, and
-the tree-visualization panel's layout math was sanity-checked against the real repo's 49-node
-tree. Not yet verified by hand: the pan/zoom drag interactions themselves (only checked that
-the underlying math doesn't produce bad values) — try it and see how it feels. Next: the live
-agent-navigation visualizer described in the meta-repo's diary feature plan.
+Verified statically against the real `toprope-agentdev` meta-repo (layout math, node
+classification, node-folding) and against a fabricated fake transcript (offset tracking,
+partial-line buffering across ticks, tool_use file_path extraction, path-to-node resolution
+walking up to a folded parent, freshness decay math) — not yet exercised by hand in a live
+Extension Development Host window. The transcript format is Claude Code's internal
+conversation-persistence schema, not a published contract (see the `toprope-agentdev` diary,
+2026-08-18-1007) — malformed/drifted lines are skipped rather than crashing the extension,
+degrading to "no glow" if it ever breaks.

@@ -11,14 +11,6 @@
   "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
-    "views": {
-      "explorer": [
-        {
-          "id": "aharVsvis.harnessTree",
-          "name": "Harness Structure"
-        }
-      ]
-    },
     "commands": [
       {
         "command": "aharVsvis.refresh",
@@ -27,37 +19,12 @@
         "category": "ahar-vsvis"
       },
       {
-        "command": "aharVsvis.toggleFlatten",
-        "title": "Toggle Flatten Harnesses",
-        "icon": "$(list-flat)",
-        "category": "ahar-vsvis"
-      },
-      {
         "command": "aharVsvis.openTreeVisualization",
         "title": "Open Tree Visualization",
         "icon": "$(type-hierarchy)",
         "category": "ahar-vsvis"
       }
-    ],
-    "menus": {
-      "view/title": [
-        {
-          "command": "aharVsvis.refresh",
-          "when": "view == aharVsvis.harnessTree",
-          "group": "navigation@1"
-        },
-        {
-          "command": "aharVsvis.toggleFlatten",
-          "when": "view == aharVsvis.harnessTree",
-          "group": "navigation@2"
-        },
-        {
-          "command": "aharVsvis.openTreeVisualization",
-          "when": "view == aharVsvis.harnessTree",
-          "group": "navigation@3"
-        }
-      ]
-    }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

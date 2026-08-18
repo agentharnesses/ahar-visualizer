@@ -1,5 +1,6 @@
 import * as vscode from 'vscode'
 import { buildHarnessIndex, HarnessIndex } from './harness'
+import { TranscriptWatcher } from './transcriptWatcher'
 
 interface VizNode {
   id: string
@@ -57,6 +58,7 @@ export class HarnessTreePanel {
   private readonly panel: vscode.WebviewPanel
   private readonly rootPath: string
   private readonly disposables: vscode.Disposable[] = []
+  private readonly watcher: TranscriptWatcher
 
   static createOrShow(rootPath: string): void {
     if (HarnessTreePanel.current) {
@@ -88,11 +90,18 @@ export class HarnessTreePanel {
           const uri = vscode.Uri.file(message.path)
           await vscode.window.showTextDocument(uri, { preview: true })
           await vscode.commands.executeCommand('revealInExplorer', uri)
+        } else if (message.type === 'refresh') {
+          this.refresh()
         }
       },
       null,
       this.disposables
     )
+
+    this.watcher = new TranscriptWatcher(rootPath, (step, filePaths) => {
+      void this.panel.webview.postMessage({ type: 'step', step, filePaths })
+    })
+    this.watcher.start()
 
     this.refresh()
   }
@@ -105,6 +114,7 @@ export class HarnessTreePanel {
 
   private dispose(): void {
     HarnessTreePanel.current = undefined
+    this.watcher.stop()
     this.panel.dispose()
     while (this.disposables.length) {
       this.disposables.pop()?.dispose()
@@ -127,10 +137,12 @@ function renderHtml(nodes: VizNode[]): string {
   #canvas { width: 100%; height: 100%; display: block; cursor: grab; }
   #canvas.panning { cursor: grabbing; }
   .node .shape { stroke: var(--vscode-editor-background); stroke-width: 1; }
+  .node .glow { fill: var(--vscode-charts-orange); opacity: 0; pointer-events: none; }
   .node.muted .shape { opacity: 0.4; }
   .node.selected .shape { stroke: var(--vscode-focusBorder); stroke-width: 2; }
   .node.hovered .shape { stroke: var(--vscode-foreground); stroke-width: 1.5; }
   .edge { fill: none; stroke: var(--vscode-widget-border, #454545); stroke-width: 1; opacity: 0.6; }
+  .edge-glow { fill: none; stroke: var(--vscode-charts-orange); stroke-width: 4; opacity: 0; pointer-events: none; }
   #tooltip, #info {
     position: absolute; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border, #454545);
     border-radius: 6px; padding: 8px 10px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); pointer-events: none;
@@ -172,12 +184,26 @@ function renderHtml(nodes: VizNode[]): string {
 </head>
 <body>
 <svg id="canvas">
-  <g id="viewport"></g>
+  <defs>
+    <filter id="glowBlur" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+  <g id="viewport">
+    <g id="edgeGlowLayer"></g>
+    <g id="edgeLayer"></g>
+    <g id="nodeLayer"></g>
+  </g>
 </svg>
 <div id="toolbar">
   <button id="zoomIn" title="Zoom in">+</button>
   <button id="zoomOut" title="Zoom out">−</button>
   <button id="zoomReset" title="Fit to view">⤢</button>
+  <button id="refreshBtn" title="Refresh from disk">⟳</button>
 </div>
 <div id="legend">
   <div class="row"><span class="sq" style="background:var(--vscode-charts-red)"></span> Harness root (HARNESS.md)</div>
@@ -186,6 +212,7 @@ function renderHtml(nodes: VizNode[]): string {
   <div class="row"><span class="ci" style="background:var(--vscode-charts-blue)"></span> Leaf descriptor file</div>
   <div class="row"><span class="sq muted" style="background:var(--vscode-descriptionForeground)"></span><span class="ci muted" style="background:var(--vscode-descriptionForeground)"></span> Not harness-standard-relevant</div>
   <div class="row" style="margin-top:4px">▢ directory &nbsp; ● file</div>
+  <div class="row"><span class="sq" style="background:var(--vscode-charts-orange)"></span> Recently touched by Claude</div>
 </div>
 <div id="tooltip"></div>
 <div id="info"></div>
@@ -195,6 +222,7 @@ function renderHtml(nodes: VizNode[]): string {
   const nodes = ${data};
 
   const SIZE = 16, H_GAP = 12, V_GAP = 42;
+  const DECAY_STEPS = 40; // freshness fades to 0 over this many observed transcript lines, not wall-clock time
 
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const childrenOf = new Map(nodes.map((n) => [n.id, []]));
@@ -242,12 +270,18 @@ function renderHtml(nodes: VizNode[]): string {
   const svgNS = 'http://www.w3.org/2000/svg';
   const svg = document.getElementById('canvas');
   const viewport = document.getElementById('viewport');
+  const edgeGlowLayer = document.getElementById('edgeGlowLayer');
+  const edgeLayer = document.getElementById('edgeLayer');
+  const nodeLayer = document.getElementById('nodeLayer');
 
   function el(tag, attrs) {
     const e = document.createElementNS(svgNS, tag);
     for (const k in attrs) e.setAttribute(k, attrs[k]);
     return e;
   }
+
+  const edgeGlowById = new Map(); // child id -> glow path element for edge(child, parent)
+  const nodeGlowById = new Map(); // node id -> glow shape element
 
   // Edges
   for (const n of nodes) {
@@ -258,7 +292,10 @@ function renderHtml(nodes: VizNode[]): string {
     const cy = depth.get(n.id) * (SIZE + V_GAP);
     const midY = (py + cy) / 2;
     const d = 'M ' + px + ' ' + py + ' C ' + px + ' ' + midY + ', ' + cx + ' ' + midY + ', ' + cx + ' ' + cy;
-    viewport.appendChild(el('path', { class: 'edge', d }));
+    const glowPath = el('path', { class: 'edge-glow', d, filter: 'url(#glowBlur)' });
+    edgeGlowLayer.appendChild(glowPath);
+    edgeGlowById.set(n.id, glowPath);
+    edgeLayer.appendChild(el('path', { class: 'edge', d }));
   }
 
   // Nodes
@@ -272,6 +309,11 @@ function renderHtml(nodes: VizNode[]): string {
       transform: 'translate(' + x + ',' + y + ')'
     });
     const color = colorFor(n);
+    const glowShape = n.isDirectory
+      ? el('rect', { class: 'glow', x: -4, y: -4, width: SIZE + 8, height: SIZE + 8, rx: 5, filter: 'url(#glowBlur)' })
+      : el('circle', { class: 'glow', cx: SIZE / 2, cy: SIZE / 2, r: SIZE / 2 + 4, filter: 'url(#glowBlur)' });
+    g.appendChild(glowShape);
+    nodeGlowById.set(n.id, glowShape);
     if (n.isDirectory) {
       g.appendChild(el('rect', { class: 'shape', width: SIZE, height: SIZE, rx: 3, fill: color }));
     } else {
@@ -279,8 +321,57 @@ function renderHtml(nodes: VizNode[]): string {
     }
     // Generous invisible hit area so small shapes are easy to hover/click.
     g.appendChild(el('rect', { x: -6, y: -6, width: SIZE + 12, height: SIZE + 12, fill: 'transparent' }));
-    viewport.appendChild(g);
+    nodeLayer.appendChild(g);
   }
+
+  // --- Live glow, driven by conversation steps (transcript lines), not time ---
+  let currentStep = 0;
+  const lastTouchedStep = new Map(); // node id -> step at which it was last touched
+
+  function resolveToNodeId(filePath) {
+    let p = filePath;
+    while (p && p.length > 1) {
+      if (byId.has(p)) return p;
+      const idx = p.lastIndexOf('/');
+      if (idx <= 0) break;
+      p = p.slice(0, idx);
+    }
+    return null;
+  }
+
+  function freshnessOf(id) {
+    const t = lastTouchedStep.get(id);
+    if (t === undefined) return 0;
+    const delta = currentStep - t;
+    return Math.max(0, 1 - delta / DECAY_STEPS);
+  }
+
+  function updateGlow() {
+    for (const n of nodes) {
+      const glowEl = nodeGlowById.get(n.id);
+      if (glowEl) glowEl.style.opacity = String(freshnessOf(n.id));
+    }
+    for (const n of nodes) {
+      if (n.parentId === null) continue;
+      // Edge glow equals the freshness of the PARENT — this alone makes glow
+      // propagate up the tree: every ancestor that's still fresh lights the
+      // edge above it, independent of how deep the actual touched node was.
+      const edgeGlow = edgeGlowById.get(n.id);
+      if (edgeGlow) edgeGlow.style.opacity = String(freshnessOf(n.parentId));
+    }
+  }
+
+  window.addEventListener('message', (event) => {
+    const msg = event.data;
+    if (msg.type === 'step') {
+      currentStep = msg.step;
+      for (const fp of msg.filePaths || []) {
+        const resolved = resolveToNodeId(fp);
+        if (resolved) lastTouchedStep.set(resolved, currentStep);
+      }
+      updateGlow();
+    }
+  });
 
   // Pan/zoom state
   let scale = 1, tx = 40, ty = 40;
@@ -345,6 +436,7 @@ function renderHtml(nodes: VizNode[]): string {
   document.getElementById('zoomIn').addEventListener('click', () => { scale = Math.min(scale * 1.2, 5); updateTransform(); });
   document.getElementById('zoomOut').addEventListener('click', () => { scale = Math.max(scale / 1.2, 0.1); updateTransform(); });
   document.getElementById('zoomReset').addEventListener('click', fitToView);
+  document.getElementById('refreshBtn').addEventListener('click', () => vscode.postMessage({ type: 'refresh' }));
 
   const tooltip = document.getElementById('tooltip');
   const info = document.getElementById('info');
