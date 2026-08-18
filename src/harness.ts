@@ -22,6 +22,8 @@ export interface HarnessNode {
   isDirectory: boolean
   kind: HarnessKind
   leafType?: string
+  /** Directories only: true if a direct child file is a routing index (e.g. SKILLS.md). */
+  hasRoutingChild?: boolean
 }
 
 export interface IndexEntry {
@@ -146,6 +148,7 @@ export function buildHarnessIndex(rootPath: string): HarnessIndex {
 
     const children: HarnessNode[] = []
     let anyChildRelevant = false
+    let hasRoutingChild = false
 
     for (const entry of entries) {
       if (entry.isDirectory()) {
@@ -165,9 +168,11 @@ export function buildHarnessIndex(rootPath: string): HarnessIndex {
         const fileRelevant = RELEVANT_KINDS.has(fileKind)
         index.set(fileNode.fsPath, { node: fileNode, children: [], relevant: fileRelevant })
         if (fileRelevant) anyChildRelevant = true
+        if (fileKind === 'routing') hasRoutingChild = true
       }
     }
 
+    node.hasRoutingChild = hasRoutingChild
     const relevant = RELEVANT_KINDS.has(kind) || anyChildRelevant
     const entry: IndexEntry = { node, children, relevant }
     index.set(dirPath, entry)

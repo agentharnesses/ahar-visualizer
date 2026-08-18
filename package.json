@@ -31,6 +31,12 @@
         "title": "Toggle Flatten Harnesses",
         "icon": "$(list-flat)",
         "category": "ahar-vsvis"
+      },
+      {
+        "command": "aharVsvis.openTreeVisualization",
+        "title": "Open Tree Visualization",
+        "icon": "$(type-hierarchy)",
+        "category": "ahar-vsvis"
       }
     ],
     "menus": {
@@ -44,6 +50,11 @@
           "command": "aharVsvis.toggleFlatten",
           "when": "view == aharVsvis.harnessTree",
           "group": "navigation@2"
+        },
+        {
+          "command": "aharVsvis.openTreeVisualization",
+          "when": "view == aharVsvis.harnessTree",
+          "group": "navigation@3"
         }
       ]
     }
