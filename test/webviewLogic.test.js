@@ -165,3 +165,27 @@ test('debug log records both host and client messages, and resolution outcomes f
     'an unresolved path should be explicitly logged as such, not silently dropped'
   )
 })
+
+test('a node stays marked "visited" permanently, even after its glow fully decays', () => {
+  const w = runWebview(NODES)
+  w.sendStep(1, ['/root/skills/agent-harnesses/SKILL.md']) // marks SKILL.md + agent-harnesses
+
+  assert.equal(w.nodeVisited('/root/skills/agent-harnesses/SKILL.md'), true)
+  assert.equal(w.nodeVisited('/root/skills/agent-harnesses'), true)
+  assert.equal(w.nodeVisited('/root/other'), false, 'never-touched sibling must not be marked visited')
+
+  w.sendStep(1000, []) // long past DECAY_STEPS (40) — glow is fully gone
+  assert.equal(w.nodeGlowOpacity('/root/skills/agent-harnesses/SKILL.md'), 0, 'sanity: glow really did decay to 0')
+  assert.equal(w.nodeVisited('/root/skills/agent-harnesses/SKILL.md'), true, 'but visited stays true forever')
+  assert.equal(w.nodeVisited('/root/skills/agent-harnesses'), true)
+})
+
+test('an edge stays marked "visited" permanently, distinguishing it from a never-touched sibling edge', () => {
+  const w = runWebview(NODES)
+  w.sendStep(1, ['/root/skills/agent-harnesses/SKILL.md'])
+  w.sendStep(1000, []) // fully decayed
+
+  assert.equal(w.edgeGlowOpacity('/root/skills/agent-harnesses/SKILL.md'), 0, 'sanity: edge glow decayed to 0')
+  assert.equal(w.edgeVisited('/root/skills/agent-harnesses/SKILL.md'), true, 'the touched path\'s edge stays visited')
+  assert.equal(w.edgeVisited('/root/other'), false, 'a sibling edge that was never on a touched path stays plain')
+})

@@ -174,9 +174,19 @@ function renderHtml(nodes: VizNode[]): string {
   .node .shape { stroke: var(--vscode-editor-background); stroke-width: 1; }
   .node .glow { fill: var(--vscode-charts-orange); opacity: 0; pointer-events: none; }
   .node.muted .shape { opacity: 0.4; }
+  /* Visited-but-cold: a thin persistent orange ring, distinct from the bright
+     animated glow halo used for currently-hot nodes — same color family (so
+     "has a ring" and "is glowing" read as two intensities of one idea, not
+     two unrelated signals), but a static stroke instead of a blurred fill,
+     so it stays subtle even on a node that's never going to light up again. */
+  .node.visited .shape { stroke: var(--vscode-charts-orange); stroke-opacity: 0.55; stroke-width: 1.5; }
   .node.selected .shape { stroke: var(--vscode-focusBorder); stroke-width: 2; }
   .node.hovered .shape { stroke: var(--vscode-foreground); stroke-width: 1.5; }
   .edge { fill: none; stroke: var(--vscode-widget-border, #454545); stroke-width: 1; opacity: 0.6; }
+  /* Same idea for edges: a dim, permanent orange tint marks "this link was
+     ever on a touched path," independent of the bright edge-glow overlay
+     that represents current freshness. Untouched edges stay plain gray. */
+  .edge.visited { stroke: var(--vscode-charts-orange); opacity: 0.35; }
   .edge-glow { fill: none; stroke: var(--vscode-charts-orange); stroke-width: 4; opacity: 0; pointer-events: none; }
   #tooltip, #info {
     position: absolute; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border, #454545);
@@ -269,7 +279,8 @@ function renderHtml(nodes: VizNode[]): string {
   <div class="row"><span class="ci" style="background:var(--vscode-charts-blue)"></span> Leaf descriptor file</div>
   <div class="row"><span class="sq muted" style="background:var(--vscode-descriptionForeground)"></span><span class="ci muted" style="background:var(--vscode-descriptionForeground)"></span> Not harness-standard-relevant</div>
   <div class="row" style="margin-top:4px">▢ directory &nbsp; ● file</div>
-  <div class="row"><span class="sq" style="background:var(--vscode-charts-orange)"></span> Recently touched by Claude</div>
+  <div class="row"><span class="sq" style="background:transparent;border:1.5px solid var(--vscode-charts-orange)"></span> Visited earlier, now cold</div>
+  <div class="row"><span class="sq" style="background:var(--vscode-charts-orange)"></span> Currently hot (recently touched)</div>
 </div>
 <svg id="connectorSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;">
   <line id="connectorLine" x1="0" y1="0" x2="0" y2="0" stroke="var(--vscode-focusBorder)" stroke-width="1.5" stroke-dasharray="4 3" opacity="0" />
@@ -348,7 +359,9 @@ function renderHtml(nodes: VizNode[]): string {
   }
 
   const edgeGlowById = new Map(); // child id -> glow path element for edge(child, parent)
+  const edgeById = new Map(); // child id -> plain edge path element for edge(child, parent)
   const nodeGlowById = new Map(); // node id -> glow shape element
+  const nodeGroupById = new Map(); // node id -> the node's <g> element
 
   // Edges
   for (const n of nodes) {
@@ -362,7 +375,9 @@ function renderHtml(nodes: VizNode[]): string {
     const glowPath = el('path', { class: 'edge-glow', 'data-child-id': n.id, d, filter: 'url(#glowBlur)' });
     edgeGlowLayer.appendChild(glowPath);
     edgeGlowById.set(n.id, glowPath);
-    edgeLayer.appendChild(el('path', { class: 'edge', 'data-child-id': n.id, d }));
+    const edgePath = el('path', { class: 'edge', 'data-child-id': n.id, d });
+    edgeLayer.appendChild(edgePath);
+    edgeById.set(n.id, edgePath);
   }
 
   // Nodes
@@ -381,6 +396,7 @@ function renderHtml(nodes: VizNode[]): string {
       : el('circle', { class: 'glow', cx: SIZE / 2, cy: SIZE / 2, r: SIZE / 2 + 4, filter: 'url(#glowBlur)' });
     g.appendChild(glowShape);
     nodeGlowById.set(n.id, glowShape);
+    nodeGroupById.set(n.id, g);
     if (n.isDirectory) {
       g.appendChild(el('rect', { class: 'shape', width: SIZE, height: SIZE, rx: 3, fill: color }));
     } else {
@@ -415,13 +431,14 @@ function renderHtml(nodes: VizNode[]): string {
 
   function updateGlow() {
     for (const n of nodes) {
+      const everVisited = lastTouchedStep.has(n.id);
       const glowEl = nodeGlowById.get(n.id);
       if (glowEl) glowEl.style.opacity = String(freshnessOf(n.id));
+      const group = nodeGroupById.get(n.id);
+      if (group) group.classList.toggle('visited', everVisited);
     }
     for (const n of nodes) {
       if (n.parentId === null) continue;
-      const edgeGlow = edgeGlowById.get(n.id);
-      if (!edgeGlow) continue;
       // Edge glow's *value* is the parent's freshness, but it's gated on the
       // child having some freshness entry of its own (touched directly, or
       // marked as an immediate parent via the one-hop rule above). Without
@@ -433,7 +450,14 @@ function renderHtml(nodes: VizNode[]): string {
       // themselves part of that same contiguous chain, not by jumping past
       // an untouched node to reach a fresh one further up.
       const childIsOnATouchedPath = lastTouchedStep.has(n.id);
-      edgeGlow.style.opacity = String(childIsOnATouchedPath ? freshnessOf(n.parentId) : 0);
+      const edgeGlow = edgeGlowById.get(n.id);
+      if (edgeGlow) edgeGlow.style.opacity = String(childIsOnATouchedPath ? freshnessOf(n.parentId) : 0);
+      // The plain edge gets the same "ever visited" permanence nodes get —
+      // once a path has carried a touch, its edge stays a dim orange rather
+      // than reverting to plain gray, distinguishing "explored, now cold"
+      // from "never explored at all".
+      const edge = edgeById.get(n.id);
+      if (edge) edge.classList.toggle('visited', childIsOnATouchedPath);
     }
   }
 

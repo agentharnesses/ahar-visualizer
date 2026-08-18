@@ -48,6 +48,12 @@ function makeEl(tag) {
       },
       contains(c) {
         return this.set.has(c)
+      },
+      toggle(c, force) {
+        const on = force === undefined ? !this.set.has(c) : force
+        if (on) this.set.add(c)
+        else this.set.delete(c)
+        return on
       }
     },
     setAttribute(k, v) {
@@ -144,7 +150,19 @@ function runWebview(fakeNodes) {
     return byIdMap.debugLogBody.children.map((c) => c.textContent)
   }
 
-  return { sendStep, sendDebug, nodeGlowOpacity, edgeGlowOpacity, debugLogLines }
+  function nodeVisited(nodeId) {
+    const g = byIdMap.nodeLayer.children.find((c) => c.attrs['data-id'] === nodeId)
+    assert.ok(g, 'no rendered node found for id ' + nodeId)
+    return g.classList.contains('visited')
+  }
+
+  function edgeVisited(childId) {
+    const p = byIdMap.edgeLayer.children.find((c) => c.attrs['data-child-id'] === childId)
+    assert.ok(p, 'no rendered edge found for child id ' + childId)
+    return p.classList.contains('visited')
+  }
+
+  return { sendStep, sendDebug, nodeGlowOpacity, edgeGlowOpacity, debugLogLines, nodeVisited, edgeVisited }
 }
 
 module.exports = { runWebview, extractScript, makeEl }
