@@ -11,6 +11,13 @@ interface VizNode {
   hasRoutingChild?: boolean
 }
 
+/** Files that are purely structural (HARNESS.md, routing indexes) don't get their own
+ *  node — they only inform their parent directory's color, already computed as
+ *  hasRoutingChild / the harness-root kind in harness.ts. */
+function isFoldedIntoParent(kind: string): boolean {
+  return kind === 'harness-md' || kind === 'routing'
+}
+
 function serialize(index: HarnessIndex, rootPath: string): VizNode[] {
   const nodes: VizNode[] = []
 
@@ -18,6 +25,7 @@ function serialize(index: HarnessIndex, rootPath: string): VizNode[] {
     const entry = index.get(fsPath)
     if (!entry) return
     const n = entry.node
+    if (isFoldedIntoParent(n.kind)) return
     nodes.push({
       id: n.fsPath,
       parentId,
@@ -118,14 +126,22 @@ function renderHtml(nodes: VizNode[]): string {
   html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: var(--vscode-editor-background); color: var(--vscode-foreground); font-family: var(--vscode-font-family); }
   #canvas { width: 100%; height: 100%; display: block; cursor: grab; }
   #canvas.panning { cursor: grabbing; }
-  .node rect { stroke-width: 1.5; fill: var(--vscode-editorWidget-background); }
-  .node text { font-size: 12px; fill: var(--vscode-foreground); pointer-events: none; user-select: none; }
-  .node.selected rect { stroke-width: 3; }
-  .edge { fill: none; stroke: var(--vscode-widget-border, #454545); stroke-width: 1.5; }
+  .node .shape { stroke: var(--vscode-editor-background); stroke-width: 1; }
+  .node.muted .shape { opacity: 0.4; }
+  .node.selected .shape { stroke: var(--vscode-focusBorder); stroke-width: 2; }
+  .node.hovered .shape { stroke: var(--vscode-foreground); stroke-width: 1.5; }
+  .edge { fill: none; stroke: var(--vscode-widget-border, #454545); stroke-width: 1; opacity: 0.6; }
+  #tooltip, #info {
+    position: absolute; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border, #454545);
+    border-radius: 6px; padding: 8px 10px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); pointer-events: none;
+  }
+  #tooltip { display: none; z-index: 10; }
+  #tooltip.visible { display: block; }
+  #tooltip .name { font-weight: 600; }
+  #tooltip .kind { color: var(--vscode-descriptionForeground); }
   #info {
-    position: absolute; top: 12px; right: 12px; width: 260px; max-height: calc(100% - 24px);
-    overflow: auto; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border, #454545);
-    border-radius: 6px; padding: 10px 12px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); display: none;
+    top: 12px; right: 12px; width: 260px; max-height: calc(100% - 24px); overflow: auto;
+    display: none; pointer-events: auto;
   }
   #info.visible { display: block; }
   #info h3 { margin: 0 0 6px 0; font-size: 13px; word-break: break-word; }
@@ -141,8 +157,11 @@ function renderHtml(nodes: VizNode[]): string {
     border: 1px solid var(--vscode-widget-border, #454545); border-radius: 6px; padding: 8px 10px; font-size: 11px;
     color: var(--vscode-descriptionForeground);
   }
-  #legend div { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
-  #legend .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  #legend .row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+  #legend .sq, #legend .ci { display: inline-block; width: 10px; height: 10px; }
+  #legend .sq { border-radius: 2px; }
+  #legend .ci { border-radius: 50%; }
+  #legend .muted { opacity: 0.4; }
   #toolbar { position: absolute; top: 12px; left: 12px; display: flex; gap: 4px; }
   #toolbar button {
     background: var(--vscode-editorWidget-background); color: var(--vscode-foreground);
@@ -161,18 +180,21 @@ function renderHtml(nodes: VizNode[]): string {
   <button id="zoomReset" title="Fit to view">⤢</button>
 </div>
 <div id="legend">
-  <div><span class="swatch" style="background:var(--vscode-charts-red)"></span> Harness root (HARNESS.md)</div>
-  <div><span class="swatch" style="background:var(--vscode-charts-yellow)"></span> Routing index (SKILLS.md, etc.)</div>
-  <div><span class="swatch" style="background:var(--vscode-charts-blue)"></span> Leaf</div>
-  <div><span class="swatch" style="background:var(--vscode-descriptionForeground)"></span> Plain file / folder</div>
+  <div class="row"><span class="sq" style="background:var(--vscode-charts-red)"></span> Harness root (HARNESS.md)</div>
+  <div class="row"><span class="sq" style="background:var(--vscode-charts-yellow)"></span> Directory with routing index</div>
+  <div class="row"><span class="sq" style="background:var(--vscode-charts-blue)"></span> Leaf directory</div>
+  <div class="row"><span class="ci" style="background:var(--vscode-charts-blue)"></span> Leaf descriptor file</div>
+  <div class="row"><span class="sq muted" style="background:var(--vscode-descriptionForeground)"></span><span class="ci muted" style="background:var(--vscode-descriptionForeground)"></span> Not harness-standard-relevant</div>
+  <div class="row" style="margin-top:4px">▢ directory &nbsp; ● file</div>
 </div>
+<div id="tooltip"></div>
 <div id="info"></div>
 <script nonce="${nonce}">
 (function () {
   const vscode = acquireVsCodeApi();
   const nodes = ${data};
 
-  const NODE_W = 150, NODE_H = 32, H_GAP = 20, V_GAP = 60;
+  const SIZE = 16, H_GAP = 12, V_GAP = 42;
 
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const childrenOf = new Map(nodes.map((n) => [n.id, []]));
@@ -185,14 +207,12 @@ function renderHtml(nodes: VizNode[]): string {
   const posX = new Map();
   const depth = new Map();
   let leafCounter = 0;
-  let maxDepth = 0;
 
   function layout(id, d) {
     depth.set(id, d);
-    maxDepth = Math.max(maxDepth, d);
     const kids = childrenOf.get(id) || [];
     if (kids.length === 0) {
-      const x = leafCounter * (NODE_W + H_GAP);
+      const x = leafCounter * (SIZE + H_GAP);
       leafCounter++;
       posX.set(id, x);
       return x;
@@ -204,17 +224,19 @@ function renderHtml(nodes: VizNode[]): string {
   }
   if (root) layout(root.id, 0);
 
+  function isRelevant(n) {
+    if (n.isDirectory) return n.kind === 'harness-root' || n.hasRoutingChild || n.kind === 'leaf';
+    return n.kind === 'leaf-descriptor';
+  }
+
   function colorFor(n) {
+    if (!isRelevant(n)) return 'var(--vscode-descriptionForeground)';
     if (n.isDirectory) {
       if (n.kind === 'harness-root') return 'var(--vscode-charts-red)';
       if (n.hasRoutingChild) return 'var(--vscode-charts-yellow)';
-      if (n.kind === 'leaf') return 'var(--vscode-charts-blue)';
-      return 'var(--vscode-descriptionForeground)';
+      return 'var(--vscode-charts-blue)'; // leaf
     }
-    if (n.kind === 'harness-md') return 'var(--vscode-charts-red)';
-    if (n.kind === 'routing') return 'var(--vscode-charts-yellow)';
-    if (n.kind === 'leaf-descriptor') return 'var(--vscode-charts-blue)';
-    return 'var(--vscode-descriptionForeground)';
+    return 'var(--vscode-charts-blue)'; // leaf-descriptor
   }
 
   const svgNS = 'http://www.w3.org/2000/svg';
@@ -230,10 +252,10 @@ function renderHtml(nodes: VizNode[]): string {
   // Edges
   for (const n of nodes) {
     if (n.parentId === null) continue;
-    const px = posX.get(n.parentId) + NODE_W / 2;
-    const py = depth.get(n.parentId) * (NODE_H + V_GAP) + NODE_H;
-    const cx = posX.get(n.id) + NODE_W / 2;
-    const cy = depth.get(n.id) * (NODE_H + V_GAP);
+    const px = posX.get(n.parentId) + SIZE / 2;
+    const py = depth.get(n.parentId) * (SIZE + V_GAP) + SIZE;
+    const cx = posX.get(n.id) + SIZE / 2;
+    const cy = depth.get(n.id) * (SIZE + V_GAP);
     const midY = (py + cy) / 2;
     const d = 'M ' + px + ' ' + py + ' C ' + px + ' ' + midY + ', ' + cx + ' ' + midY + ', ' + cx + ' ' + cy;
     viewport.appendChild(el('path', { class: 'edge', d }));
@@ -242,19 +264,21 @@ function renderHtml(nodes: VizNode[]): string {
   // Nodes
   for (const n of nodes) {
     const x = posX.get(n.id);
-    const y = depth.get(n.id) * (NODE_H + V_GAP);
-    const g = el('g', { class: 'node', 'data-id': n.id, transform: 'translate(' + x + ',' + y + ')' });
+    const y = depth.get(n.id) * (SIZE + V_GAP);
+    const relevant = isRelevant(n);
+    const g = el('g', {
+      class: 'node' + (relevant ? '' : ' muted'),
+      'data-id': n.id,
+      transform: 'translate(' + x + ',' + y + ')'
+    });
     const color = colorFor(n);
-    g.appendChild(el('rect', { width: NODE_W, height: NODE_H, rx: 5, stroke: color }));
-    g.appendChild(el('rect', { x: 0, y: 0, width: 4, height: NODE_H, fill: color, rx: 2 }));
-    const text = el('text', { x: 10, y: NODE_H / 2 + 4 });
-    let label = n.name;
-    if (label.length > 20) label = label.slice(0, 18) + '…';
-    text.textContent = label;
-    g.appendChild(text);
-    const title = document.createElementNS(svgNS, 'title');
-    title.textContent = n.name;
-    g.appendChild(title);
+    if (n.isDirectory) {
+      g.appendChild(el('rect', { class: 'shape', width: SIZE, height: SIZE, rx: 3, fill: color }));
+    } else {
+      g.appendChild(el('circle', { class: 'shape', cx: SIZE / 2, cy: SIZE / 2, r: SIZE / 2, fill: color }));
+    }
+    // Generous invisible hit area so small shapes are easy to hover/click.
+    g.appendChild(el('rect', { x: -6, y: -6, width: SIZE + 12, height: SIZE + 12, fill: 'transparent' }));
     viewport.appendChild(g);
   }
 
@@ -274,7 +298,7 @@ function renderHtml(nodes: VizNode[]): string {
     const pad = 60;
     const scaleX = (svgRect.width - pad) / bounds.width;
     const scaleY = (svgRect.height - pad) / bounds.height;
-    scale = Math.min(scaleX, scaleY, 1.5);
+    scale = Math.min(scaleX, scaleY, 3);
     tx = (svgRect.width - bounds.width * scale) / 2 - bounds.x * scale;
     ty = pad / 2 - bounds.y * scale;
     updateTransform();
@@ -286,7 +310,7 @@ function renderHtml(nodes: VizNode[]): string {
       const rect = svg.getBoundingClientRect();
       const cx = e.clientX - rect.left;
       const cy = e.clientY - rect.top;
-      const newScale = Math.min(Math.max(scale * (1 - e.deltaY * 0.01), 0.1), 3);
+      const newScale = Math.min(Math.max(scale * (1 - e.deltaY * 0.01), 0.1), 5);
       tx = cx - ((cx - tx) * newScale) / scale;
       ty = cy - ((cy - ty) * newScale) / scale;
       scale = newScale;
@@ -318,24 +342,61 @@ function renderHtml(nodes: VizNode[]): string {
     svg.classList.remove('panning');
   });
 
-  document.getElementById('zoomIn').addEventListener('click', () => { scale = Math.min(scale * 1.2, 3); updateTransform(); });
+  document.getElementById('zoomIn').addEventListener('click', () => { scale = Math.min(scale * 1.2, 5); updateTransform(); });
   document.getElementById('zoomOut').addEventListener('click', () => { scale = Math.max(scale / 1.2, 0.1); updateTransform(); });
   document.getElementById('zoomReset').addEventListener('click', fitToView);
 
+  const tooltip = document.getElementById('tooltip');
   const info = document.getElementById('info');
-  let selected = null;
+  let selectedEl = null;
+  let hoveredEl = null;
+
+  function kindLabel(n) {
+    if (n.isDirectory) {
+      if (n.kind === 'harness-root') return 'harness root';
+      if (n.hasRoutingChild) return 'directory (routing)';
+      if (n.kind === 'leaf') return 'leaf (' + (n.leafType || '?') + ')';
+      return 'directory';
+    }
+    if (n.kind === 'leaf-descriptor') return 'leaf descriptor';
+    return 'file';
+  }
+
+  svg.addEventListener('mouseover', (e) => {
+    const target = e.target.closest('[data-id]');
+    if (!target || target === hoveredEl) return;
+    if (hoveredEl) hoveredEl.classList.remove('hovered');
+    hoveredEl = target;
+    hoveredEl.classList.add('hovered');
+    const n = byId.get(target.getAttribute('data-id'));
+    tooltip.innerHTML = '<div class="name">' + escapeHtml(n.name) + '</div><div class="kind">' + escapeHtml(kindLabel(n)) + '</div>';
+    tooltip.classList.add('visible');
+  });
+  svg.addEventListener('mousemove', (e) => {
+    if (!tooltip.classList.contains('visible')) return;
+    tooltip.style.left = (e.clientX + 14) + 'px';
+    tooltip.style.top = (e.clientY + 14) + 'px';
+  });
+  svg.addEventListener('mouseout', (e) => {
+    const target = e.target.closest('[data-id]');
+    const to = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('[data-id]') : null;
+    if (target && target === to) return;
+    if (hoveredEl) hoveredEl.classList.remove('hovered');
+    hoveredEl = null;
+    tooltip.classList.remove('visible');
+  });
 
   svg.addEventListener('click', (e) => {
     if (didDrag) return;
     const target = e.target.closest('[data-id]');
-    if (selected) selected.classList.remove('selected');
+    if (selectedEl) selectedEl.classList.remove('selected');
     if (!target) {
       info.classList.remove('visible');
-      selected = null;
+      selectedEl = null;
       return;
     }
     target.classList.add('selected');
-    selected = target;
+    selectedEl = target;
     const n = byId.get(target.getAttribute('data-id'));
     showInfo(n);
   });
@@ -351,7 +412,7 @@ function renderHtml(nodes: VizNode[]): string {
     const childCount = (childrenOf.get(n.id) || []).length;
     info.innerHTML =
       '<h3>' + escapeHtml(n.name) + '</h3>' +
-      '<div class="row">Kind: ' + escapeHtml(n.kind) + (n.leafType ? ' (' + escapeHtml(n.leafType) + ')' : '') + '</div>' +
+      '<div class="row">' + escapeHtml(kindLabel(n)) + '</div>' +
       (n.isDirectory ? '<div class="row">Children: ' + childCount + '</div>' : '') +
       '<div class="row path">' + escapeHtml(n.id) + '</div>' +
       (!n.isDirectory ? '<button id="openBtn">Open File</button>' : '');
