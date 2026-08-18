@@ -134,6 +134,10 @@ function runWebview(fakeNodes) {
     for (const cb of messageListeners) cb({ data: { type: 'debug', source, message } })
   }
 
+  function sendSessionReset() {
+    for (const cb of messageListeners) cb({ data: { type: 'sessionReset' } })
+  }
+
   function nodeGlowOpacity(nodeId) {
     const g = byIdMap.nodeLayer.children.find((c) => c.attrs['data-id'] === nodeId)
     assert.ok(g, 'no rendered node found for id ' + nodeId)
@@ -162,7 +166,16 @@ function runWebview(fakeNodes) {
     return p.classList.contains('visited')
   }
 
-  return { sendStep, sendDebug, nodeGlowOpacity, edgeGlowOpacity, debugLogLines, nodeVisited, edgeVisited }
+  return {
+    sendStep,
+    sendDebug,
+    sendSessionReset,
+    nodeGlowOpacity,
+    edgeGlowOpacity,
+    debugLogLines,
+    nodeVisited,
+    edgeVisited
+  }
 }
 
 module.exports = { runWebview, extractScript, makeEl }

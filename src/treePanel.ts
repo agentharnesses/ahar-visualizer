@@ -136,6 +136,9 @@ export class HarnessTreePanel {
       (message) => {
         appendDebugLog(`[host] ${message}`)
         void this.panel.webview.postMessage({ type: 'debug', source: 'host', message })
+      },
+      () => {
+        void this.panel.webview.postMessage({ type: 'sessionReset' })
       }
     )
     this.watcher.start()
@@ -171,22 +174,24 @@ function renderHtml(nodes: VizNode[]): string {
   html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: var(--vscode-editor-background); color: var(--vscode-foreground); font-family: var(--vscode-font-family); }
   #canvas { width: 100%; height: 100%; display: block; cursor: grab; }
   #canvas.panning { cursor: grabbing; }
-  .node .shape { stroke: var(--vscode-editor-background); stroke-width: 1; }
+  /* Three readable tiers, each strictly more prominent than the last:
+     never-visited (dim/plain) < visited-but-cold (clearly brighter, static,
+     permanent) < hot (bright animated glow on top of the visited styling).
+     Visited must never end up LESS prominent than never-visited — that was
+     a real bug here (visited edges were rendering at *lower* opacity than
+     plain ones) — so the never-visited baselines below are deliberately
+     dim to leave headroom for "visited" to clearly outrank them. */
+  .node .shape { stroke: var(--vscode-editor-background); stroke-width: 1; opacity: 0.75; }
   .node .glow { fill: var(--vscode-charts-orange); opacity: 0; pointer-events: none; }
-  .node.muted .shape { opacity: 0.4; }
-  /* Visited-but-cold: a thin persistent orange ring, distinct from the bright
-     animated glow halo used for currently-hot nodes — same color family (so
-     "has a ring" and "is glowing" read as two intensities of one idea, not
-     two unrelated signals), but a static stroke instead of a blurred fill,
-     so it stays subtle even on a node that's never going to light up again. */
-  .node.visited .shape { stroke: var(--vscode-charts-orange); stroke-opacity: 0.55; stroke-width: 1.5; }
+  .node.muted .shape { opacity: 0.32; }
+  .node.visited .shape {
+    opacity: 1; stroke: var(--vscode-charts-orange); stroke-opacity: 0.75; stroke-width: 1.5;
+  }
+  .node.visited.muted .shape { opacity: 0.8; }
   .node.selected .shape { stroke: var(--vscode-focusBorder); stroke-width: 2; }
   .node.hovered .shape { stroke: var(--vscode-foreground); stroke-width: 1.5; }
-  .edge { fill: none; stroke: var(--vscode-widget-border, #454545); stroke-width: 1; opacity: 0.6; }
-  /* Same idea for edges: a dim, permanent orange tint marks "this link was
-     ever on a touched path," independent of the bright edge-glow overlay
-     that represents current freshness. Untouched edges stay plain gray. */
-  .edge.visited { stroke: var(--vscode-charts-orange); opacity: 0.35; }
+  .edge { fill: none; stroke: var(--vscode-widget-border, #454545); stroke-width: 1; opacity: 0.3; }
+  .edge.visited { stroke: var(--vscode-charts-orange); stroke-width: 1.25; opacity: 0.8; }
   .edge-glow { fill: none; stroke: var(--vscode-charts-orange); stroke-width: 4; opacity: 0; pointer-events: none; }
   #tooltip, #info {
     position: absolute; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border, #454545);
@@ -482,6 +487,13 @@ function renderHtml(nodes: VizNode[]): string {
     const msg = event.data;
     if (msg.type === 'debug') {
       logDebug(msg.source || 'host', msg.message);
+      return;
+    }
+    if (msg.type === 'sessionReset') {
+      lastTouchedStep.clear();
+      currentStep = 0;
+      updateGlow();
+      logDebug('client', 'new session detected — cleared visited/hot state from any previous session');
       return;
     }
     if (msg.type === 'step') {

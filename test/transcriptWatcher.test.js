@@ -159,3 +159,38 @@ test('follows the newest post-start session when more than one exists', () => {
     assert.deepEqual(events.pop().filePaths, [ROOT + '/second.ts'], 'should switch to the newer session')
   })
 })
+
+test('fires onSessionStart on every session switch and resets the step counter', () => {
+  const home = fakeHome()
+  withFakeHome(home, () => {
+    const dir = projectDirFor(home, ROOT)
+
+    const sessionStarts = []
+    const events = []
+    const w = new TranscriptWatcher(
+      ROOT,
+      (step, filePaths) => events.push({ step, filePaths }),
+      () => {},
+      () => sessionStarts.push(true)
+    )
+    w.start()
+    w.stop()
+    assert.equal(sessionStarts.length, 0, 'no session exists yet, so nothing to start')
+
+    const first = path.join(dir, 'first.jsonl')
+    fs.writeFileSync(
+      first,
+      [readToolUseLine('Read', ROOT + '/a.ts'), readToolUseLine('Read', ROOT + '/b.ts')].join('\n') + '\n'
+    )
+    w['tick']()
+    assert.equal(sessionStarts.length, 1, 'first session file discovered should fire onSessionStart')
+    assert.equal(events.pop().step, 2, 'step counts from 1 for this session')
+
+    sleepSync(30)
+    const second = path.join(dir, 'second.jsonl')
+    fs.writeFileSync(second, readToolUseLine('Read', ROOT + '/c.ts') + '\n')
+    w['tick']()
+    assert.equal(sessionStarts.length, 2, 'switching to a different session fires onSessionStart again')
+    assert.equal(events.pop().step, 1, 'step restarts from 1 for the new session, not continuing from the old one')
+  })
+})

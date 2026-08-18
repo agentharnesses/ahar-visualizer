@@ -24,7 +24,12 @@ export class TranscriptWatcher {
   constructor(
     private readonly rootPath: string,
     private readonly onEvent: (step: number, filePaths: string[]) => void,
-    private readonly onDebug: (message: string) => void = () => {}
+    private readonly onDebug: (message: string) => void = () => {},
+    /** Fired whenever the watcher starts following a *different* session
+     *  file than before — including the very first one. Lets the webview
+     *  scope "visited" state to the current session specifically, rather
+     *  than accumulating across every session this window ever runs. */
+    private readonly onSessionStart: () => void = () => {}
   ) {}
 
   start(): void {
@@ -111,6 +116,11 @@ export class TranscriptWatcher {
       this.currentFile = latest
       this.offset = 0
       this.carry = ''
+      // A new session file means a genuinely different conversation — reset
+      // the step counter so decay is scoped to *this* session's own length,
+      // not accumulated across whatever earlier sessions this window ran.
+      this.step = 0
+      this.onSessionStart()
     }
 
     let size: number

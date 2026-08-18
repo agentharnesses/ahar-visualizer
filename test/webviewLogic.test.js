@@ -189,3 +189,42 @@ test('an edge stays marked "visited" permanently, distinguishing it from a never
   assert.equal(w.edgeVisited('/root/skills/agent-harnesses/SKILL.md'), true, 'the touched path\'s edge stays visited')
   assert.equal(w.edgeVisited('/root/other'), false, 'a sibling edge that was never on a touched path stays plain')
 })
+
+test('a leaf marked fresh only via one-hop still shows a visited edge to its own untouched parent', () => {
+  // This is the exact scenario reported by hand: touch SKILL.md (its own
+  // node), which one-hop-marks agent-harnesses (its immediate parent) but
+  // NOT skills (agent-harnesses's own parent, two hops up). The edge
+  // between agent-harnesses and skills has zero *glow* (skills was never
+  // independently fresh), but it must still render as "visited" — that's
+  // the whole point of the visited tier: a real connection in a touched
+  // path shouldn't look identical to a connection nobody ever went near.
+  const w = runWebview(NODES)
+  w.sendStep(1, ['/root/skills/agent-harnesses/SKILL.md'])
+
+  assert.equal(w.edgeGlowOpacity('/root/skills/agent-harnesses'), 0, 'no hot glow — skills itself was never touched')
+  assert.equal(
+    w.edgeVisited('/root/skills/agent-harnesses'),
+    true,
+    'but the edge must still read as visited, since agent-harnesses (the child) really was touched'
+  )
+})
+
+test('a sessionReset message clears visited/hot state so it stays scoped to the current session', () => {
+  const w = runWebview(NODES)
+  w.sendStep(1, ['/root/skills/agent-harnesses/SKILL.md'])
+  assert.equal(w.nodeVisited('/root/skills/agent-harnesses/SKILL.md'), true)
+  assert.equal(w.nodeGlowOpacity('/root/skills/agent-harnesses/SKILL.md'), 1)
+  assert.equal(w.edgeVisited('/root/skills/agent-harnesses/SKILL.md'), true)
+
+  w.sendSessionReset()
+
+  assert.equal(w.nodeVisited('/root/skills/agent-harnesses/SKILL.md'), false, 'visited state must not leak across sessions')
+  assert.equal(w.nodeGlowOpacity('/root/skills/agent-harnesses/SKILL.md'), 0)
+  assert.equal(w.edgeVisited('/root/skills/agent-harnesses/SKILL.md'), false)
+
+  // And the new session's own activity should work normally afterward —
+  // reset must not leave the panel in some broken state.
+  w.sendStep(1, ['/root/other'])
+  assert.equal(w.nodeVisited('/root/other'), true)
+  assert.equal(w.nodeGlowOpacity('/root/other'), 1)
+})
