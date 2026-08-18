@@ -20,6 +20,13 @@ export class TranscriptWatcher {
   private carry = ''
   private step = 0
   private watcherStartMs = 0
+  // Filenames permanently excluded by the birthtime cutoff. A file's
+  // birthtime never changes once created, so once a name lands here it can
+  // be skipped without ever stat-ing it again — without this, every tick
+  // (every 400ms, for as long as the panel stays open) would re-stat every
+  // historical session file in the project directory forever, which only
+  // gets worse the longer a repo has been in use.
+  private readonly rejectedNames = new Set<string>()
 
   constructor(
     private readonly rootPath: string,
@@ -73,14 +80,16 @@ export class TranscriptWatcher {
     }
     let latest: string | null = null
     let latestMtime = 0
-    const rejected: string[] = []
+    const newlyRejected: string[] = []
     for (const name of entries) {
+      if (this.rejectedNames.has(name)) continue // already known-permanently-excluded; skip the stat entirely
       const full = path.join(this.projectDir(), name)
       try {
         const stat = fs.statSync(full)
         const birth = stat.birthtimeMs || stat.ctimeMs
         if (birth < this.watcherStartMs) {
-          rejected.push(`${name} (birth=${new Date(birth).toISOString()}, predates cutoff)`)
+          this.rejectedNames.add(name)
+          newlyRejected.push(`${name} (birth=${new Date(birth).toISOString()}, predates cutoff)`)
           continue
         }
         if (stat.mtimeMs > latestMtime) {
@@ -88,11 +97,16 @@ export class TranscriptWatcher {
           latest = full
         }
       } catch (err) {
-        rejected.push(`${name} (stat failed: ${String(err)})`)
+        // Not cached as rejected — a transient stat failure (e.g. a file
+        // disappearing mid-scan) shouldn't be treated as permanent.
+        newlyRejected.push(`${name} (stat failed: ${String(err)})`)
       }
     }
-    if (!latest && entries.length > 0) {
-      this.onDebug(`found ${entries.length} .jsonl file(s), none pass the cutoff: ${rejected.join('; ')}`)
+    // Only log when something actually changed (new files seen since the
+    // last tick) — logging "still nothing" every 400ms forever is exactly
+    // the kind of unbounded growth the debug log shouldn't have either.
+    if (newlyRejected.length > 0) {
+      this.onDebug(`rejected ${newlyRejected.length} new file(s) (predate this watcher): ${newlyRejected.join('; ')}`)
     }
     return latest
   }

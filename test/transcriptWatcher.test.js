@@ -194,3 +194,56 @@ test('fires onSessionStart on every session switch and resets the step counter',
     assert.equal(events.pop().step, 1, 'step restarts from 1 for the new session, not continuing from the old one')
   })
 })
+
+test('never re-stats a file once it has been rejected by the birthtime cutoff', () => {
+  const home = fakeHome()
+  withFakeHome(home, () => {
+    const dir = projectDirFor(home, ROOT)
+
+    // A pile of historical sessions, all predating the watcher — simulates
+    // a repo with a lot of session history already sitting in its project
+    // directory before this panel was ever opened.
+    const oldFiles = []
+    for (let i = 0; i < 15; i++) {
+      const f = path.join(dir, 'old-' + i + '.jsonl')
+      fs.writeFileSync(f, readToolUseLine('Read', ROOT + '/old.ts') + '\n')
+      oldFiles.push(f)
+    }
+    // A real, unambiguous gap before the watcher's cutoff timestamp — without
+    // this, file creation and `Date.now()` can land in the same millisecond,
+    // and birthtime-vs-cutoff comparisons at that resolution aren't reliably
+    // ordered (same class of race the "ignores a session file that predates
+    // the watcher" test above already accounts for).
+    sleepSync(30)
+
+    const w = new TranscriptWatcher(ROOT, () => {})
+    // start() itself runs an initial tick, which is enough to see and
+    // reject every old file at least once — run a couple more up front so
+    // the cache is fully warmed before measurement starts, since the exact
+    // tick on which each file first gets seen isn't the point of this test.
+    w.start()
+    w.stop()
+    w['tick']()
+    w['tick']()
+
+    const realStatSync = fs.statSync
+    let statCallsOnOldFiles = 0
+    fs.statSync = (p, ...rest) => {
+      if (oldFiles.includes(p)) statCallsOnOldFiles++
+      return realStatSync(p, ...rest)
+    }
+    try {
+      w['tick']()
+      w['tick']()
+      w['tick']()
+
+      assert.equal(
+        statCallsOnOldFiles,
+        0,
+        'once cached as rejected, an old file must never be stat-ed again on any later tick'
+      )
+    } finally {
+      fs.statSync = realStatSync
+    }
+  })
+})
