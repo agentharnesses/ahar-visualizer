@@ -25,6 +25,10 @@ interface VizNode {
   kind: string
   leafType?: string
   hasRoutingChild?: boolean
+  /** Absolute path of the HARNESS.md/routing file folded into this directory
+   *  (if any) — folded files don't get their own node, so without this,
+   *  there'd be no way to open them from the tree at all. */
+  foldedFilePath?: string
 }
 
 /** Files that are purely structural (HARNESS.md, routing indexes) don't get their own
@@ -36,13 +40,23 @@ function isFoldedIntoParent(kind: string): boolean {
 
 function serialize(index: HarnessIndex, rootPath: string): VizNode[] {
   const nodes: VizNode[] = []
+  const nodeById = new Map<string, VizNode>()
 
   function walk(fsPath: string, parentId: string | null): void {
     const entry = index.get(fsPath)
     if (!entry) return
     const n = entry.node
-    if (isFoldedIntoParent(n.kind)) return
-    nodes.push({
+    if (isFoldedIntoParent(n.kind)) {
+      // Record the folded file's path on its parent's already-created viz
+      // node so the tree can still offer to open it, even though the file
+      // itself never became a node.
+      if (parentId) {
+        const parentNode = nodeById.get(parentId)
+        if (parentNode) parentNode.foldedFilePath = n.fsPath
+      }
+      return
+    }
+    const vizNode: VizNode = {
       id: n.fsPath,
       parentId,
       name: n.name,
@@ -50,7 +64,9 @@ function serialize(index: HarnessIndex, rootPath: string): VizNode[] {
       kind: n.kind,
       leafType: n.leafType,
       hasRoutingChild: n.hasRoutingChild
-    })
+    }
+    nodes.push(vizNode)
+    nodeById.set(vizNode.id, vizNode)
     for (const child of entry.children) {
       walk(child.fsPath, n.fsPath)
     }
@@ -191,7 +207,6 @@ function renderHtml(nodes: VizNode[]): string {
   .node.selected .shape { stroke: var(--vscode-focusBorder); stroke-width: 2; }
   .node.hovered .shape { stroke: var(--vscode-foreground); stroke-width: 1.5; }
   .node.has-children .shape { cursor: pointer; }
-  .node.collapsed .shape { stroke-dasharray: 3 2; }
   .collapse-indicator { fill: var(--vscode-charts-orange); pointer-events: none; }
   .edge { fill: none; stroke: var(--vscode-widget-border, #454545); stroke-width: 1; opacity: 0.3; }
   .edge.visited { stroke: var(--vscode-charts-orange); stroke-width: 1.25; opacity: 0.8; }
@@ -828,21 +843,31 @@ function renderHtml(nodes: VizNode[]): string {
     const kids = childrenOf.get(n.id) || [];
     const hasChildren = n.isDirectory && kids.length > 0;
     const isCollapsed = hasChildren && collapsed.has(n.id);
+    const foldedName = n.foldedFilePath ? n.foldedFilePath.slice(n.foldedFilePath.lastIndexOf('/') + 1) : null;
     info.innerHTML =
       '<h3>' + escapeHtml(n.name) + '</h3>' +
       '<div class="row">' + escapeHtml(kindLabel(n)) + '</div>' +
       (n.isDirectory ? '<div class="row">Children: ' + kids.length + '</div>' : '') +
       '<div class="row path">' + escapeHtml(n.id) + '</div>' +
       (!n.isDirectory ? '<button id="openBtn">Open File</button>' : '') +
+      (foldedName ? '<button id="openFoldedBtn">Open ' + escapeHtml(foldedName) + '</button>' : '') +
       (hasChildren ? '<button id="collapseBtn" class="secondary">' + (isCollapsed ? 'Expand' : 'Collapse') + ' subtree</button>' : '');
     info.classList.add('visible');
-    const btn = document.getElementById('openBtn');
-    if (btn) btn.addEventListener('click', () => vscode.postMessage({ type: 'openFile', path: n.id }));
-    const cbtn = document.getElementById('collapseBtn');
-    if (cbtn) cbtn.addEventListener('click', () => {
-      if (collapsed.has(n.id)) collapsed.delete(n.id); else collapsed.add(n.id);
-      renderTree(n.id);
-    });
+    if (!n.isDirectory) {
+      const btn = document.getElementById('openBtn');
+      if (btn) btn.addEventListener('click', () => vscode.postMessage({ type: 'openFile', path: n.id }));
+    }
+    if (foldedName) {
+      const foldedBtn = document.getElementById('openFoldedBtn');
+      if (foldedBtn) foldedBtn.addEventListener('click', () => vscode.postMessage({ type: 'openFile', path: n.foldedFilePath }));
+    }
+    if (hasChildren) {
+      const cbtn = document.getElementById('collapseBtn');
+      if (cbtn) cbtn.addEventListener('click', () => {
+        if (collapsed.has(n.id)) collapsed.delete(n.id); else collapsed.add(n.id);
+        renderTree(n.id);
+      });
+    }
   }
 
   function escapeHtml(s) {

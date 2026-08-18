@@ -220,6 +220,27 @@ function runWebview(fakeNodes) {
     for (const cb of listeners) cb({ target })
   }
 
+  /** Simulates a single click on a currently-rendered node — selects it and
+   *  triggers showInfo(), the same as a real click in the webview. */
+  function clickNode(nodeId) {
+    const target = nodeGroupById(nodeId)
+    assert.ok(target, 'no rendered node found for id ' + nodeId + ' (is it currently visible?)')
+    const listeners = byIdMap.canvas._listeners.click || []
+    assert.ok(listeners.length > 0, 'no click listener registered on the canvas')
+    for (const cb of listeners) cb({ target })
+  }
+
+  /** Simulates clicking a button inside the currently-rendered info panel
+   *  (e.g. showInfo()'s dynamically-created "Open File" / "Collapse
+   *  subtree" buttons), by id. */
+  function clickInfoButton(buttonId) {
+    const b = byIdMap[buttonId]
+    assert.ok(b, 'no button with id ' + buttonId + ' has been created yet — is the info panel showing it?')
+    const listeners = b._listeners.click || []
+    assert.ok(listeners.length > 0, 'button ' + buttonId + ' has no click listener registered')
+    for (const cb of listeners) cb({})
+  }
+
   return {
     sendStep,
     sendDebug,
@@ -235,6 +256,8 @@ function runWebview(fakeNodes) {
     isCollapsedNode,
     collapseIndicatorOpacity,
     dblclickNode,
+    clickNode,
+    clickInfoButton,
     postedMessages
   }
 }

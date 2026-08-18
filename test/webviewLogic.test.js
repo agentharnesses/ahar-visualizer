@@ -228,3 +228,23 @@ test('a sessionReset message clears visited/hot state so it stays scoped to the 
   assert.equal(w.nodeVisited('/root/other'), true)
   assert.equal(w.nodeGlowOpacity('/root/other'), 1)
 })
+
+test('clicking a directory that has a folded routing/HARNESS.md file offers to open it', () => {
+  const nodesWithFolded = NODES.map((n) =>
+    n.id === '/root' ? { ...n, foldedFilePath: '/root/HARNESS.md' } : n
+  )
+  const w = runWebview(nodesWithFolded)
+
+  w.clickNode('/root')
+  w.clickInfoButton('openFoldedBtn')
+
+  const opens = w.postedMessages.filter((m) => m.type === 'openFile')
+  assert.equal(opens.length, 1)
+  assert.equal(opens[0].path, '/root/HARNESS.md')
+})
+
+test('a directory with no folded file offers no "open folded file" button', () => {
+  const w = runWebview(NODES) // /root has no foldedFilePath in the base fixture
+  w.clickNode('/root')
+  assert.throws(() => w.clickInfoButton('openFoldedBtn'))
+})

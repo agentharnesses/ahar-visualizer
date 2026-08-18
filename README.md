@@ -42,10 +42,15 @@ whichever folder is open as the workspace root.
 - **Collapsible subtrees, built for large trees.** Double-click a directory (or use the
   "Collapse subtree" button in its info panel) to hide its descendants; a small bar underneath
   shows the max glow anywhere inside, so a hot node hidden inside a collapsed branch is never
-  invisible. This is designed to stay fast on very large trees: collapsing a subtree never
+  invisible — that bar is the only visual marker for "collapsed" (no dashed border on the
+  shape itself). This is designed to stay fast on very large trees: collapsing a subtree never
   walks into it for layout or rendering — a directory with 10,000 hidden descendants costs O(1)
   to collapse, not O(10,000) — and every live-update pass (`updateGlow`) only touches whatever's
   currently rendered, never the full tree.
+- **Opening the routing/`HARNESS.md` file a directory's color comes from.** `HARNESS.md` and
+  routing-index files never get their own node (they're folded into their parent directory's
+  color), which used to mean there was no way to actually open them from the tree. Clicking such
+  a directory now shows an "Open SKILLS.md" (or `HARNESS.md`, etc.) button in its info panel.
 
 ```
 npm install
@@ -55,21 +60,25 @@ npm test          # runs the automated test suite (see below)
 # in the Extension Development Host
 ```
 
-**Automated tests** (`npm test`, `node:test`, no dependencies, 28 tests) cover the parts that
+**Automated tests** (`npm test`, `node:test`, no dependencies, 35 tests) cover the parts that
 don't need a live VS Code window: `test/transcriptWatcher.test.js` exercises the transcript-
 tailing logic directly (offset tracking, partial-line buffering, batching, the fast-exchange-
-before-first-tick edge case, and per-session scoping/reset) against fabricated fake
-transcripts; `test/webviewLogic.test.js` and `test/collapse.test.js` extract the actual
-`<script>` block from `treePanel.ts`'s generated HTML verbatim and run it in a stubbed DOM/SVG
-sandbox (`test/webviewLogic.harness.js`), asserting on the real glow/decay/edge-propagation/
-collapse behavior (not a reimplementation of it) by dispatching fake `postMessage`/DOM events
-and reading back computed state; `test/integration.test.js` wires TranscriptWatcher's real
-output straight into the real webview script end-to-end. This is deliberately the primary way
-this extension's logic gets verified — round-tripping every change through a real Extension
-Development Host window by hand doesn't scale as a feedback loop and misses exactly the kind
-of subtle bugs (an ancestor-propagation rule that over-triggers, a temporal-dead-zone crash
-from declaration order, edge glow with backwards opacity) these tests were written
-specifically to catch.
+before-first-tick edge case, per-session scoping/reset, and that rejected session files never
+get re-stat'd) against fabricated fake transcripts; `test/webviewLogic.test.js` and
+`test/collapse.test.js` extract the actual `<script>` block from `treePanel.ts`'s generated HTML
+verbatim and run it in a stubbed DOM/SVG sandbox (`test/webviewLogic.harness.js`), asserting on
+the real glow/decay/edge-propagation/collapse behavior (not a reimplementation of it) by
+dispatching fake `postMessage`/DOM events (including simulated clicks and double-clicks through
+the real listeners) and reading back computed state; `test/serialize.test.js` extracts and
+transpiles `serialize()` (the extension-host function that walks the harness index into the
+node list the webview receives) to verify folded-file-path bookkeeping without needing
+`vscode`; `test/integration.test.js` wires TranscriptWatcher's real output straight into the
+real webview script end-to-end. This is deliberately the primary way this extension's logic
+gets verified — round-tripping every change through a real Extension Development Host window
+by hand doesn't scale as a feedback loop and misses exactly the kind of subtle bugs (an
+ancestor-propagation rule that over-triggers, a temporal-dead-zone crash from declaration
+order, edge glow with backwards opacity, an unbounded per-tick filesystem scan) these tests
+were written specifically to catch.
 
 The transcript format itself is Claude Code's internal conversation-persistence schema, not a
 published contract (see the `toprope-agentdev` diary, 2026-08-18-1007) — malformed/drifted
