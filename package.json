@@ -1,0 +1,61 @@
+{
+  "name": "ahar-vsvis",
+  "displayName": "ahar-vsvis",
+  "description": "Visualizes agent-harnesses-standard structure in a workspace.",
+  "version": "0.0.1",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Visualization", "Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "views": {
+      "explorer": [
+        {
+          "id": "aharVsvis.harnessTree",
+          "name": "Harness Structure"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "aharVsvis.refresh",
+        "title": "Refresh",
+        "icon": "$(refresh)",
+        "category": "ahar-vsvis"
+      },
+      {
+        "command": "aharVsvis.toggleFlatten",
+        "title": "Toggle Flatten Harnesses",
+        "icon": "$(list-flat)",
+        "category": "ahar-vsvis"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "aharVsvis.refresh",
+          "when": "view == aharVsvis.harnessTree",
+          "group": "navigation@1"
+        },
+        {
+          "command": "aharVsvis.toggleFlatten",
+          "when": "view == aharVsvis.harnessTree",
+          "group": "navigation@2"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.4.0"
+  }
+}
