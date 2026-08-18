@@ -58,6 +58,11 @@ function makeEl(tag) {
     },
     setAttribute(k, v) {
       this.attrs[k] = String(v)
+      // Real browsers keep the `class` attribute and `classList` in sync
+      // automatically. el() sets classes via setAttribute('class', ...) at
+      // creation time, so without this, classList.contains() would never
+      // see any class that wasn't *also* toggled later via classList.toggle.
+      if (k === 'class') this.classList.set = new Set(String(v).split(/\s+/).filter(Boolean))
     },
     getAttribute(k) {
       return this.attrs[k]
@@ -74,14 +79,22 @@ function makeEl(tag) {
     get firstChild() {
       return this.children[0]
     },
-    addEventListener() {},
+    _listeners: {},
+    addEventListener(type, cb) {
+      ;(this._listeners[type] = this._listeners[type] || []).push(cb)
+    },
     getBoundingClientRect() {
       return { left: 0, top: 0, right: 10, bottom: 10, width: 10, height: 10 }
     },
     getBBox() {
       return { x: 0, y: 0, width: 100, height: 100 }
     },
-    closest() {
+    // Real `closest` walks up the ancestor chain; tests only ever dispatch
+    // synthetic events with `target` set directly to the node <g> itself
+    // (see dblclickNode/clickNode below), so matching on this element alone
+    // is a faithful-enough stand-in for `target.closest('[data-id]')`.
+    closest(selector) {
+      if (selector === '[data-id]' && this.attrs['data-id'] !== undefined) return this
       return null
     }
   }
@@ -119,10 +132,11 @@ function runWebview(fakeNodes) {
         if (type === 'message') messageListeners.push(cb)
       }
     },
-    acquireVsCodeApi: () => ({ postMessage: () => {} }),
+    acquireVsCodeApi: () => ({ postMessage: (m) => postedMessages.push(m) }),
     requestAnimationFrame: () => {},
     console
   }
+  const postedMessages = []
   vm.createContext(sandbox)
   vm.runInContext(script, sandbox)
 
@@ -154,8 +168,12 @@ function runWebview(fakeNodes) {
     return byIdMap.debugLogBody.children.map((c) => c.textContent)
   }
 
+  function nodeGroupById(nodeId) {
+    return byIdMap.nodeLayer.children.find((c) => c.attrs['data-id'] === nodeId)
+  }
+
   function nodeVisited(nodeId) {
-    const g = byIdMap.nodeLayer.children.find((c) => c.attrs['data-id'] === nodeId)
+    const g = nodeGroupById(nodeId)
     assert.ok(g, 'no rendered node found for id ' + nodeId)
     return g.classList.contains('visited')
   }
@@ -166,6 +184,42 @@ function runWebview(fakeNodes) {
     return p.classList.contains('visited')
   }
 
+  function isRendered(nodeId) {
+    return !!nodeGroupById(nodeId)
+  }
+
+  function renderedNodeIds() {
+    return byIdMap.nodeLayer.children.map((c) => c.attrs['data-id'])
+  }
+
+  function renderedEdgeCount() {
+    return byIdMap.edgeLayer.children.length
+  }
+
+  function isCollapsedNode(nodeId) {
+    const g = nodeGroupById(nodeId)
+    assert.ok(g, 'no rendered node found for id ' + nodeId)
+    return g.classList.contains('collapsed')
+  }
+
+  function collapseIndicatorOpacity(nodeId) {
+    const g = nodeGroupById(nodeId)
+    assert.ok(g, 'no rendered node found for id ' + nodeId)
+    const bar = g.children.find((c) => c.attrs.class === 'collapse-indicator')
+    return bar ? Number(bar.style.opacity) : null
+  }
+
+  /** Simulates double-clicking a currently-rendered node — dispatches
+   *  through the real dblclick listener registered on the canvas <svg>, the
+   *  same code path a real double-click in the webview goes through. */
+  function dblclickNode(nodeId) {
+    const target = nodeGroupById(nodeId)
+    assert.ok(target, 'no rendered node found for id ' + nodeId + ' (is it currently visible?)')
+    const listeners = byIdMap.canvas._listeners.dblclick || []
+    assert.ok(listeners.length > 0, 'no dblclick listener registered on the canvas')
+    for (const cb of listeners) cb({ target })
+  }
+
   return {
     sendStep,
     sendDebug,
@@ -174,7 +228,14 @@ function runWebview(fakeNodes) {
     edgeGlowOpacity,
     debugLogLines,
     nodeVisited,
-    edgeVisited
+    edgeVisited,
+    isRendered,
+    renderedNodeIds,
+    renderedEdgeCount,
+    isCollapsedNode,
+    collapseIndicatorOpacity,
+    dblclickNode,
+    postedMessages
   }
 }
 

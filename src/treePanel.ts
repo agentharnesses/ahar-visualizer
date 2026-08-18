@@ -190,6 +190,9 @@ function renderHtml(nodes: VizNode[]): string {
   .node.visited.muted .shape { opacity: 0.8; }
   .node.selected .shape { stroke: var(--vscode-focusBorder); stroke-width: 2; }
   .node.hovered .shape { stroke: var(--vscode-foreground); stroke-width: 1.5; }
+  .node.has-children .shape { cursor: pointer; }
+  .node.collapsed .shape { stroke-dasharray: 3 2; }
+  .collapse-indicator { fill: var(--vscode-charts-orange); pointer-events: none; }
   .edge { fill: none; stroke: var(--vscode-widget-border, #454545); stroke-width: 1; opacity: 0.3; }
   .edge.visited { stroke: var(--vscode-charts-orange); stroke-width: 1.25; opacity: 0.8; }
   .edge-glow { fill: none; stroke: var(--vscode-charts-orange); stroke-width: 4; opacity: 0; pointer-events: none; }
@@ -210,26 +213,57 @@ function renderHtml(nodes: VizNode[]): string {
   #info .row { margin: 4px 0; color: var(--vscode-descriptionForeground); }
   #info .path { word-break: break-all; font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
   #info button {
-    margin-top: 8px; background: var(--vscode-button-background); color: var(--vscode-button-foreground);
+    margin-top: 8px; margin-right: 6px; background: var(--vscode-button-background); color: var(--vscode-button-foreground);
     border: none; border-radius: 3px; padding: 4px 10px; cursor: pointer; font-size: 12px;
   }
   #info button:hover { background: var(--vscode-button-hoverBackground); }
-  #legend {
-    position: absolute; bottom: 172px; left: 12px; background: var(--vscode-editorWidget-background);
-    border: 1px solid var(--vscode-widget-border, #454545); border-radius: 6px; padding: 8px 10px; font-size: 11px;
-    color: var(--vscode-descriptionForeground);
-  }
-  #legend .row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
-  #legend .sq, #legend .ci { display: inline-block; width: 10px; height: 10px; }
-  #legend .sq { border-radius: 2px; }
-  #legend .ci { border-radius: 50%; }
-  #legend .muted { opacity: 0.4; }
+  #info button.secondary { background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); border: 1px solid var(--vscode-widget-border, #454545); }
+  #info button.secondary:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground)); }
   #toolbar { position: absolute; top: 12px; left: 12px; display: flex; gap: 4px; }
   #toolbar button {
     background: var(--vscode-editorWidget-background); color: var(--vscode-foreground);
     border: 1px solid var(--vscode-widget-border, #454545); border-radius: 4px; width: 26px; height: 26px; cursor: pointer;
   }
   #toolbar button:hover { background: var(--vscode-list-hoverBackground); }
+  /* --- Legend: sleek, grouped, collapsible --- */
+  #legend {
+    position: absolute; bottom: 172px; left: 12px; width: 210px;
+    background: var(--vscode-editorWidget-background);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--vscode-widget-border, #454545);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    font-size: 11px;
+    overflow: hidden;
+  }
+  #legendHeader {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 10px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+    border-bottom: 1px solid var(--vscode-widget-border, #454545);
+    cursor: pointer; user-select: none;
+  }
+  #legendHeader:hover { background: var(--vscode-list-hoverBackground); }
+  #legendToggle {
+    background: transparent; border: none; color: var(--vscode-descriptionForeground);
+    font-size: 12px; line-height: 1; width: 16px; height: 16px; cursor: pointer;
+  }
+  #legendBody { padding: 8px 10px 10px; max-height: 260px; overflow-y: auto; }
+  #legendBody.collapsed { display: none; }
+  .legend-title {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 0.09em;
+    color: var(--vscode-descriptionForeground); opacity: 0.8; margin: 8px 0 4px;
+  }
+  .legend-title:first-child { margin-top: 0; }
+  .legend-row { display: flex; align-items: center; gap: 7px; margin: 3px 0; color: var(--vscode-foreground); }
+  .legend-row.dim { color: var(--vscode-descriptionForeground); }
+  .legend-swatch { display: inline-block; width: 10px; height: 10px; flex-shrink: 0; box-sizing: border-box; }
+  .legend-swatch.sq { border-radius: 3px; }
+  .legend-swatch.ci { border-radius: 50%; }
+  .legend-swatch.muted { opacity: 0.45; }
+  .legend-swatch.ring { background: transparent; border: 1.5px solid var(--vscode-charts-orange); opacity: 0.85; }
+  .legend-swatch.hot { background: var(--vscode-charts-orange); box-shadow: 0 0 5px 1px var(--vscode-charts-orange); }
+  .legend-swatch.bar { width: 14px; height: 4px; border-radius: 2px; background: var(--vscode-charts-orange); opacity: 0.6; }
+  .legend-divider { height: 1px; background: var(--vscode-widget-border, #454545); opacity: 0.6; margin: 6px 0; }
   #debugLog {
     position: absolute; left: 0; right: 0; bottom: 0; height: 160px; z-index: 6;
     background: var(--vscode-editor-background); border-top: 1px solid var(--vscode-widget-border, #454545);
@@ -278,14 +312,24 @@ function renderHtml(nodes: VizNode[]): string {
   <button id="refreshBtn" title="Refresh from disk">⟳</button>
 </div>
 <div id="legend">
-  <div class="row"><span class="sq" style="background:var(--vscode-charts-red)"></span> Harness root (HARNESS.md)</div>
-  <div class="row"><span class="sq" style="background:var(--vscode-charts-yellow)"></span> Directory with routing index</div>
-  <div class="row"><span class="sq" style="background:var(--vscode-charts-blue)"></span> Leaf directory</div>
-  <div class="row"><span class="ci" style="background:var(--vscode-charts-blue)"></span> Leaf descriptor file</div>
-  <div class="row"><span class="sq muted" style="background:var(--vscode-descriptionForeground)"></span><span class="ci muted" style="background:var(--vscode-descriptionForeground)"></span> Not harness-standard-relevant</div>
-  <div class="row" style="margin-top:4px">▢ directory &nbsp; ● file</div>
-  <div class="row"><span class="sq" style="background:transparent;border:1.5px solid var(--vscode-charts-orange)"></span> Visited earlier, now cold</div>
-  <div class="row"><span class="sq" style="background:var(--vscode-charts-orange)"></span> Currently hot (recently touched)</div>
+  <div id="legendHeader">
+    <span>Legend</span>
+    <button id="legendToggle" title="Collapse legend">−</button>
+  </div>
+  <div id="legendBody">
+    <div class="legend-title">Structure</div>
+    <div class="legend-row"><span class="legend-swatch sq" style="background:var(--vscode-charts-red)"></span>Harness root</div>
+    <div class="legend-row"><span class="legend-swatch sq" style="background:var(--vscode-charts-yellow)"></span>Routing directory</div>
+    <div class="legend-row"><span class="legend-swatch sq" style="background:var(--vscode-charts-blue)"></span>Leaf directory</div>
+    <div class="legend-row"><span class="legend-swatch ci" style="background:var(--vscode-charts-blue)"></span>Leaf descriptor</div>
+    <div class="legend-row dim"><span class="legend-swatch sq muted" style="background:var(--vscode-descriptionForeground)"></span>Not harness-relevant</div>
+    <div class="legend-row dim">▢ directory &nbsp; ● file</div>
+    <div class="legend-divider"></div>
+    <div class="legend-title">This session</div>
+    <div class="legend-row"><span class="legend-swatch sq ring"></span>Visited, now cold</div>
+    <div class="legend-row"><span class="legend-swatch sq hot"></span>Currently hot</div>
+    <div class="legend-row dim"><span class="legend-swatch bar"></span>Collapsed — bar shows max glow inside</div>
+  </div>
 </div>
 <svg id="connectorSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;">
   <line id="connectorLine" x1="0" y1="0" x2="0" y2="0" stroke="var(--vscode-focusBorder)" stroke-width="1.5" stroke-dasharray="4 3" opacity="0" />
@@ -315,26 +359,6 @@ function renderHtml(nodes: VizNode[]): string {
     else if (childrenOf.has(n.parentId)) childrenOf.get(n.parentId).push(n.id);
   }
 
-  const posX = new Map();
-  const depth = new Map();
-  let leafCounter = 0;
-
-  function layout(id, d) {
-    depth.set(id, d);
-    const kids = childrenOf.get(id) || [];
-    if (kids.length === 0) {
-      const x = leafCounter * (SIZE + H_GAP);
-      leafCounter++;
-      posX.set(id, x);
-      return x;
-    }
-    const xs = kids.map((k) => layout(k, d + 1));
-    const x = (Math.min(...xs) + Math.max(...xs)) / 2;
-    posX.set(id, x);
-    return x;
-  }
-  if (root) layout(root.id, 0);
-
   function isRelevant(n) {
     if (n.isDirectory) return n.kind === 'harness-root' || n.hasRoutingChild || n.kind === 'leaf';
     return n.kind === 'leaf-descriptor';
@@ -363,54 +387,17 @@ function renderHtml(nodes: VizNode[]): string {
     return e;
   }
 
+  // These maps only ever hold entries for the CURRENTLY VISIBLE/rendered
+  // elements — they're cleared and rebuilt by renderTree() every time
+  // visibility changes, so anything iterating them is automatically scoped
+  // to "what's on screen right now", not the whole (potentially huge) tree.
   const edgeGlowById = new Map(); // child id -> glow path element for edge(child, parent)
   const edgeById = new Map(); // child id -> plain edge path element for edge(child, parent)
   const nodeGlowById = new Map(); // node id -> glow shape element
   const nodeGroupById = new Map(); // node id -> the node's <g> element
+  const collapseIndicatorById = new Map(); // node id -> its "max glow inside" bar element
 
-  // Edges
-  for (const n of nodes) {
-    if (n.parentId === null) continue;
-    const px = posX.get(n.parentId) + SIZE / 2;
-    const py = depth.get(n.parentId) * (SIZE + V_GAP) + SIZE;
-    const cx = posX.get(n.id) + SIZE / 2;
-    const cy = depth.get(n.id) * (SIZE + V_GAP);
-    const midY = (py + cy) / 2;
-    const d = 'M ' + px + ' ' + py + ' C ' + px + ' ' + midY + ', ' + cx + ' ' + midY + ', ' + cx + ' ' + cy;
-    const glowPath = el('path', { class: 'edge-glow', 'data-child-id': n.id, d, filter: 'url(#glowBlur)' });
-    edgeGlowLayer.appendChild(glowPath);
-    edgeGlowById.set(n.id, glowPath);
-    const edgePath = el('path', { class: 'edge', 'data-child-id': n.id, d });
-    edgeLayer.appendChild(edgePath);
-    edgeById.set(n.id, edgePath);
-  }
-
-  // Nodes
-  for (const n of nodes) {
-    const x = posX.get(n.id);
-    const y = depth.get(n.id) * (SIZE + V_GAP);
-    const relevant = isRelevant(n);
-    const g = el('g', {
-      class: 'node' + (relevant ? '' : ' muted'),
-      'data-id': n.id,
-      transform: 'translate(' + x + ',' + y + ')'
-    });
-    const color = colorFor(n);
-    const glowShape = n.isDirectory
-      ? el('rect', { class: 'glow', x: -4, y: -4, width: SIZE + 8, height: SIZE + 8, rx: 5, filter: 'url(#glowBlur)' })
-      : el('circle', { class: 'glow', cx: SIZE / 2, cy: SIZE / 2, r: SIZE / 2 + 4, filter: 'url(#glowBlur)' });
-    g.appendChild(glowShape);
-    nodeGlowById.set(n.id, glowShape);
-    nodeGroupById.set(n.id, g);
-    if (n.isDirectory) {
-      g.appendChild(el('rect', { class: 'shape', width: SIZE, height: SIZE, rx: 3, fill: color }));
-    } else {
-      g.appendChild(el('circle', { class: 'shape', cx: SIZE / 2, cy: SIZE / 2, r: SIZE / 2, fill: color }));
-    }
-    // Generous invisible hit area so small shapes are easy to hover/click.
-    g.appendChild(el('rect', { x: -6, y: -6, width: SIZE + 12, height: SIZE + 12, fill: 'transparent' }));
-    nodeLayer.appendChild(g);
-  }
+  const collapsed = new Set(); // directory node ids currently collapsed
 
   // --- Live glow, driven by conversation steps (transcript lines), not time ---
   let currentStep = 0;
@@ -434,36 +421,194 @@ function renderHtml(nodes: VizNode[]): string {
     return Math.max(0, 1 - delta / DECAY_STEPS);
   }
 
-  function updateGlow() {
-    for (const n of nodes) {
-      const everVisited = lastTouchedStep.has(n.id);
-      const glowEl = nodeGlowById.get(n.id);
-      if (glowEl) glowEl.style.opacity = String(freshnessOf(n.id));
-      const group = nodeGroupById.get(n.id);
-      if (group) group.classList.toggle('visited', everVisited);
+  /** Max current freshness (and whether anything was ever touched) among a
+   *  node's DESCENDANTS — used only for collapsed nodes' summary bar, so
+   *  this walk is bounded by however many nodes are actually collapsed at
+   *  once (typically a handful), not by tree size. */
+  function subtreeSummary(id) {
+    let maxFreshness = 0;
+    let anyVisited = false;
+    function walk(nid) {
+      if (lastTouchedStep.has(nid)) {
+        anyVisited = true;
+        const f = freshnessOf(nid);
+        if (f > maxFreshness) maxFreshness = f;
+      }
+      for (const c of childrenOf.get(nid) || []) walk(c);
     }
-    for (const n of nodes) {
-      if (n.parentId === null) continue;
-      // Edge glow's *value* is the parent's freshness, but it's gated on the
-      // child having some freshness entry of its own (touched directly, or
-      // marked as an immediate parent via the one-hop rule above). Without
-      // that gate, EVERY child of a fresh node gets a glowing edge leading
-      // to it — including siblings that were never touched at all, which
-      // looks like a connection to nowhere. Gating means an edge only lights
-      // up as part of an actual touched node's own path to its parent, and
-      // "goes up the tree" only continues through ancestors that are
-      // themselves part of that same contiguous chain, not by jumping past
-      // an untouched node to reach a fresh one further up.
-      const childIsOnATouchedPath = lastTouchedStep.has(n.id);
-      const edgeGlow = edgeGlowById.get(n.id);
-      if (edgeGlow) edgeGlow.style.opacity = String(childIsOnATouchedPath ? freshnessOf(n.parentId) : 0);
-      // The plain edge gets the same "ever visited" permanence nodes get —
-      // once a path has carried a touch, its edge stays a dim orange rather
-      // than reverting to plain gray, distinguishing "explored, now cold"
-      // from "never explored at all".
-      const edge = edgeById.get(n.id);
+    for (const c of childrenOf.get(id) || []) walk(c);
+    return { maxFreshness, anyVisited };
+  }
+
+  /** Tidy-tree layout restricted to the currently-visible node set: a
+   *  collapsed directory is treated as childless here, so this never
+   *  recurses into a collapsed subtree — an O(1) cost for that branch no
+   *  matter how many thousands of descendants it's hiding. Layout cost is
+   *  always proportional to what's actually on screen, never to total tree
+   *  size, which is the whole point for a "very very large" tree. */
+  function computeVisible() {
+    const order = [];
+    const vx = new Map();
+    const vDepth = new Map();
+    let leafCounter = 0;
+
+    function visit(id, d) {
+      order.push(id);
+      vDepth.set(id, d);
+      const n = byId.get(id);
+      const kids = n.isDirectory && !collapsed.has(id) ? childrenOf.get(id) || [] : [];
+      if (kids.length === 0) {
+        const x = leafCounter * (SIZE + H_GAP);
+        leafCounter++;
+        vx.set(id, x);
+        return x;
+      }
+      const xs = kids.map((k) => visit(k, d + 1));
+      const x = (Math.min(...xs) + Math.max(...xs)) / 2;
+      vx.set(id, x);
+      return x;
+    }
+    if (root) visit(root.id, 0);
+    return { order, vx, vDepth };
+  }
+
+  const tooltip = document.getElementById('tooltip');
+  const info = document.getElementById('info');
+  const connectorLine = document.getElementById('connectorLine');
+  let selectedEl = null;
+  let hoveredEl = null;
+
+  function updateConnector() {
+    if (!selectedEl || !info.classList.contains('visible')) {
+      connectorLine.setAttribute('opacity', '0');
+      return;
+    }
+    const nodeRect = selectedEl.getBoundingClientRect();
+    const infoRect = info.getBoundingClientRect();
+    const nx = nodeRect.left + nodeRect.width / 2;
+    const ny = nodeRect.top + nodeRect.height / 2;
+    const ix = infoRect.left;
+    const iy = Math.min(Math.max(ny, infoRect.top + 10), infoRect.bottom - 10);
+    connectorLine.setAttribute('x1', String(nx));
+    connectorLine.setAttribute('y1', String(ny));
+    connectorLine.setAttribute('x2', String(ix));
+    connectorLine.setAttribute('y2', String(iy));
+    connectorLine.setAttribute('opacity', '0.8');
+  }
+
+  function updateGlow() {
+    // Only ever touches elements that exist right now (the maps are
+    // rebuilt to exactly the visible set on every renderTree() call), so
+    // this is O(visible), not O(total nodes).
+    for (const [id, glowEl] of nodeGlowById) {
+      glowEl.style.opacity = String(freshnessOf(id));
+      const group = nodeGroupById.get(id);
+      if (group) group.classList.toggle('visited', lastTouchedStep.has(id));
+    }
+    for (const [childId, edgeGlow] of edgeGlowById) {
+      const n = byId.get(childId);
+      // Edge glow's *value* is the parent's freshness, but it's gated on
+      // the child having some freshness entry of its own (touched
+      // directly, or marked as an immediate parent via the one-hop rule
+      // below). Without that gate, EVERY child of a fresh node gets a
+      // glowing edge leading to it — including siblings that were never
+      // touched at all, which looks like a connection to nowhere.
+      const childIsOnATouchedPath = lastTouchedStep.has(childId);
+      edgeGlow.style.opacity = String(childIsOnATouchedPath ? freshnessOf(n.parentId) : 0);
+      const edge = edgeById.get(childId);
       if (edge) edge.classList.toggle('visited', childIsOnATouchedPath);
     }
+    for (const [id, bar] of collapseIndicatorById) {
+      const { maxFreshness, anyVisited } = subtreeSummary(id);
+      bar.style.opacity = anyVisited ? String(Math.max(maxFreshness, 0.35)) : '0';
+    }
+  }
+
+  /** Clears and rebuilds the DOM for exactly the currently-visible node
+   *  set. Called on load and on every collapse/expand toggle — cost is
+   *  always O(visible), never O(total), because computeVisible() above
+   *  never walks into a collapsed subtree in the first place. */
+  function renderTree(reselectId) {
+    while (edgeGlowLayer.firstChild) edgeGlowLayer.removeChild(edgeGlowLayer.firstChild);
+    while (edgeLayer.firstChild) edgeLayer.removeChild(edgeLayer.firstChild);
+    while (nodeLayer.firstChild) nodeLayer.removeChild(nodeLayer.firstChild);
+    edgeGlowById.clear();
+    edgeById.clear();
+    nodeGlowById.clear();
+    nodeGroupById.clear();
+    collapseIndicatorById.clear();
+
+    const { order, vx, vDepth } = computeVisible();
+
+    for (const id of order) {
+      const n = byId.get(id);
+      if (n.parentId === null) continue;
+      const px = vx.get(n.parentId) + SIZE / 2;
+      const py = vDepth.get(n.parentId) * (SIZE + V_GAP) + SIZE;
+      const cx = vx.get(id) + SIZE / 2;
+      const cy = vDepth.get(id) * (SIZE + V_GAP);
+      const midY = (py + cy) / 2;
+      const d = 'M ' + px + ' ' + py + ' C ' + px + ' ' + midY + ', ' + cx + ' ' + midY + ', ' + cx + ' ' + cy;
+      const glowPath = el('path', { class: 'edge-glow', 'data-child-id': id, d, filter: 'url(#glowBlur)' });
+      edgeGlowLayer.appendChild(glowPath);
+      edgeGlowById.set(id, glowPath);
+      const edgePath = el('path', { class: 'edge', 'data-child-id': id, d });
+      edgeLayer.appendChild(edgePath);
+      edgeById.set(id, edgePath);
+    }
+
+    for (const id of order) {
+      const n = byId.get(id);
+      const x = vx.get(id);
+      const y = vDepth.get(id) * (SIZE + V_GAP);
+      const relevant = isRelevant(n);
+      const kids = childrenOf.get(id) || [];
+      const hasChildren = n.isDirectory && kids.length > 0;
+      const isCollapsed = hasChildren && collapsed.has(id);
+      let cls = 'node';
+      if (!relevant) cls += ' muted';
+      if (hasChildren) cls += ' has-children';
+      if (isCollapsed) cls += ' collapsed';
+      const g = el('g', { class: cls, 'data-id': id, transform: 'translate(' + x + ',' + y + ')' });
+      const color = colorFor(n);
+      const glowShape = n.isDirectory
+        ? el('rect', { class: 'glow', x: -4, y: -4, width: SIZE + 8, height: SIZE + 8, rx: 5, filter: 'url(#glowBlur)' })
+        : el('circle', { class: 'glow', cx: SIZE / 2, cy: SIZE / 2, r: SIZE / 2 + 4, filter: 'url(#glowBlur)' });
+      g.appendChild(glowShape);
+      nodeGlowById.set(id, glowShape);
+      nodeGroupById.set(id, g);
+      if (n.isDirectory) {
+        g.appendChild(el('rect', { class: 'shape', width: SIZE, height: SIZE, rx: 3, fill: color }));
+      } else {
+        g.appendChild(el('circle', { class: 'shape', cx: SIZE / 2, cy: SIZE / 2, r: SIZE / 2, fill: color }));
+      }
+      if (isCollapsed) {
+        const bar = el('rect', { class: 'collapse-indicator', x: 0, y: SIZE + 3, width: SIZE, height: 3, rx: 1.5 });
+        g.appendChild(bar);
+        collapseIndicatorById.set(id, bar);
+      }
+      // Generous invisible hit area so small shapes are easy to hover/click.
+      const hitHeight = SIZE + 12 + (isCollapsed ? 6 : 0);
+      g.appendChild(el('rect', { x: -6, y: -6, width: SIZE + 12, height: hitHeight, fill: 'transparent' }));
+      nodeLayer.appendChild(g);
+    }
+
+    // Old element references are gone now — either restore selection onto
+    // the (still-visible) node that triggered this re-render, or clear it.
+    if (reselectId && nodeGroupById.has(reselectId)) {
+      const newEl = nodeGroupById.get(reselectId);
+      newEl.classList.add('selected');
+      selectedEl = newEl;
+      showInfo(byId.get(reselectId));
+    } else {
+      selectedEl = null;
+      hoveredEl = null;
+      info.classList.remove('visible');
+      tooltip.classList.remove('visible');
+    }
+
+    updateGlow();
+    updateConnector();
   }
 
   const debugLogBody = document.getElementById('debugLogBody');
@@ -482,6 +627,8 @@ function renderHtml(nodes: VizNode[]): string {
   }
   document.getElementById('debugLogClear').addEventListener('click', () => { debugLogBody.innerHTML = ''; });
   logDebug('client', 'panel script loaded (' + nodes.length + ' nodes), waiting for the transcript watcher...');
+
+  renderTree();
 
   window.addEventListener('message', (event) => {
     const msg = event.data;
@@ -532,30 +679,6 @@ function renderHtml(nodes: VizNode[]): string {
       updateConnector();
     }
   });
-
-  const tooltip = document.getElementById('tooltip');
-  const info = document.getElementById('info');
-  const connectorLine = document.getElementById('connectorLine');
-  let selectedEl = null;
-  let hoveredEl = null;
-
-  function updateConnector() {
-    if (!selectedEl || !info.classList.contains('visible')) {
-      connectorLine.setAttribute('opacity', '0');
-      return;
-    }
-    const nodeRect = selectedEl.getBoundingClientRect();
-    const infoRect = info.getBoundingClientRect();
-    const nx = nodeRect.left + nodeRect.width / 2;
-    const ny = nodeRect.top + nodeRect.height / 2;
-    const ix = infoRect.left;
-    const iy = Math.min(Math.max(ny, infoRect.top + 10), infoRect.bottom - 10);
-    connectorLine.setAttribute('x1', String(nx));
-    connectorLine.setAttribute('y1', String(ny));
-    connectorLine.setAttribute('x2', String(ix));
-    connectorLine.setAttribute('y2', String(iy));
-    connectorLine.setAttribute('opacity', '0.8');
-  }
 
   // Pan/zoom state
   let scale = 1, tx = 40, ty = 40;
@@ -623,6 +746,14 @@ function renderHtml(nodes: VizNode[]): string {
   document.getElementById('zoomReset').addEventListener('click', fitToView);
   document.getElementById('refreshBtn').addEventListener('click', () => vscode.postMessage({ type: 'refresh' }));
 
+  const legendHeader = document.getElementById('legendHeader');
+  const legendBody = document.getElementById('legendBody');
+  const legendToggle = document.getElementById('legendToggle');
+  legendHeader.addEventListener('click', () => {
+    const collapsedNow = legendBody.classList.toggle('collapsed');
+    legendToggle.textContent = collapsedNow ? '+' : '−';
+  });
+
   function kindLabel(n) {
     if (n.isDirectory) {
       if (n.kind === 'harness-root') return 'harness root';
@@ -641,7 +772,10 @@ function renderHtml(nodes: VizNode[]): string {
     hoveredEl = target;
     hoveredEl.classList.add('hovered');
     const n = byId.get(target.getAttribute('data-id'));
-    tooltip.innerHTML = '<div class="name">' + escapeHtml(n.name) + '</div><div class="kind">' + escapeHtml(kindLabel(n)) + '</div>';
+    const hint = target.classList.contains('has-children')
+      ? '<div class="kind">double-click to ' + (target.classList.contains('collapsed') ? 'expand' : 'collapse') + '</div>'
+      : '';
+    tooltip.innerHTML = '<div class="name">' + escapeHtml(n.name) + '</div><div class="kind">' + escapeHtml(kindLabel(n)) + '</div>' + hint;
     tooltip.classList.add('visible');
   });
   svg.addEventListener('mousemove', (e) => {
@@ -678,21 +812,37 @@ function renderHtml(nodes: VizNode[]): string {
   svg.addEventListener('dblclick', (e) => {
     const target = e.target.closest('[data-id]');
     if (!target) return;
-    const n = byId.get(target.getAttribute('data-id'));
-    if (n && !n.isDirectory) vscode.postMessage({ type: 'openFile', path: n.id });
+    const id = target.getAttribute('data-id');
+    const n = byId.get(id);
+    if (!n) return;
+    if (n.isDirectory) {
+      if ((childrenOf.get(id) || []).length === 0) return;
+      if (collapsed.has(id)) collapsed.delete(id); else collapsed.add(id);
+      renderTree(id);
+    } else {
+      vscode.postMessage({ type: 'openFile', path: n.id });
+    }
   });
 
   function showInfo(n) {
-    const childCount = (childrenOf.get(n.id) || []).length;
+    const kids = childrenOf.get(n.id) || [];
+    const hasChildren = n.isDirectory && kids.length > 0;
+    const isCollapsed = hasChildren && collapsed.has(n.id);
     info.innerHTML =
       '<h3>' + escapeHtml(n.name) + '</h3>' +
       '<div class="row">' + escapeHtml(kindLabel(n)) + '</div>' +
-      (n.isDirectory ? '<div class="row">Children: ' + childCount + '</div>' : '') +
+      (n.isDirectory ? '<div class="row">Children: ' + kids.length + '</div>' : '') +
       '<div class="row path">' + escapeHtml(n.id) + '</div>' +
-      (!n.isDirectory ? '<button id="openBtn">Open File</button>' : '');
+      (!n.isDirectory ? '<button id="openBtn">Open File</button>' : '') +
+      (hasChildren ? '<button id="collapseBtn" class="secondary">' + (isCollapsed ? 'Expand' : 'Collapse') + ' subtree</button>' : '');
     info.classList.add('visible');
     const btn = document.getElementById('openBtn');
     if (btn) btn.addEventListener('click', () => vscode.postMessage({ type: 'openFile', path: n.id }));
+    const cbtn = document.getElementById('collapseBtn');
+    if (cbtn) cbtn.addEventListener('click', () => {
+      if (collapsed.has(n.id)) collapsed.delete(n.id); else collapsed.add(n.id);
+      renderTree(n.id);
+    });
   }
 
   function escapeHtml(s) {

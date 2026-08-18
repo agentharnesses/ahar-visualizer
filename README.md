@@ -23,20 +23,29 @@ whichever folder is open as the workspace root.
   The panel is a normal editor tab — closing it is just closing the tab; the
   `aharVsvis: Open Tree Visualization` command re-creates it, and its own refresh button
   (⟳) re-scans the directory without needing the command palette.
-- **Live glow.** While a `claude` CLI session runs in the same workspace, the extension
-  passively tails its transcript JSONL (`~/.claude/projects/<slug>/*.jsonl`, no hooks setup
-  needed) and lights up nodes as Claude reads/edits/writes them. Glow fades — but based on
-  *conversation growth* (transcript lines observed), not wall-clock time, so it tracks how
-  "fresh" something is in the conversation's own frame rather than a real-time timer. A touch
-  lights up the node itself plus its immediate containing directory (so reading a leaf's
-  descriptor file visibly lights up the leaf, not just an easy-to-miss file node); an edge's
-  glow equals the freshness of the node above it, so independently-fresh ancestors chain
-  together visually without a single touch flooding the whole tree. Only sessions *created
-  after the panel opened* are followed — if multiple `claude` sessions are writing into the
-  same project directory at once (e.g. one developing this extension, another testing it),
-  picking "whichever transcript has the latest mtime" would get starved by whichever session
-  is more continuously active; this scopes the watcher to the session that belongs to the
-  window the panel is actually running in.
+- **Live glow, scoped to the current session.** While a `claude` CLI session runs in the same
+  workspace, the extension passively tails its transcript JSONL (`~/.claude/projects/<slug>/
+  *.jsonl`, no hooks setup needed) and lights up nodes as Claude reads/edits/writes them. Glow
+  fades based on *conversation growth* (transcript lines observed), not wall-clock time. A
+  touch lights up the node itself plus its immediate containing directory; an edge only glows
+  if its own child was actually touched, using the parent's freshness as the value — so
+  independently-fresh ancestors chain together visually without a single touch lighting up
+  every sibling edge under a fresh directory. Only sessions *created after the panel opened*
+  are followed, and switching to a genuinely new session (a fresh `claude` process starting in
+  the same window) resets all glow/visited state — "recently touched" always means "in the
+  session currently running here," not an accumulation across every session this window has
+  ever run.
+- **Three-tier prominence.** Beyond hot/cold, every node and edge that was *ever* touched in
+  the current session stays visually distinct forever (a dim persistent orange ring/tint) from
+  ones that were never touched — deliberately more prominent than plain, so you can see at a
+  glance where the agent has been over the whole session, not just where it is right now.
+- **Collapsible subtrees, built for large trees.** Double-click a directory (or use the
+  "Collapse subtree" button in its info panel) to hide its descendants; a small bar underneath
+  shows the max glow anywhere inside, so a hot node hidden inside a collapsed branch is never
+  invisible. This is designed to stay fast on very large trees: collapsing a subtree never
+  walks into it for layout or rendering — a directory with 10,000 hidden descendants costs O(1)
+  to collapse, not O(10,000) — and every live-update pass (`updateGlow`) only touches whatever's
+  currently rendered, never the full tree.
 
 ```
 npm install
@@ -46,18 +55,21 @@ npm test          # runs the automated test suite (see below)
 # in the Extension Development Host
 ```
 
-**Automated tests** (`npm test`, `node:test`, no dependencies) cover the parts that don't
-need a live VS Code window: `test/transcriptWatcher.test.js` exercises the transcript-tailing
-logic directly (offset tracking, partial-line buffering, batching, the fast-exchange-before-
-first-tick edge case, and the created-after-watcher-start session scoping) against fabricated
-fake transcripts; `test/webviewLogic.test.js` extracts the actual `<script>` block from
-`treePanel.ts`'s generated HTML verbatim, runs it in a stubbed DOM/SVG sandbox, and asserts on
-the real glow/decay/edge-propagation behavior (not a reimplementation of it) by dispatching
-fake `postMessage` events and reading back computed opacities. This is deliberately the
-primary way this extension's logic gets verified — round-tripping every change through a real
-Extension Development Host window by hand doesn't scale as a feedback loop and misses exactly
-the kind of subtle bugs (an ancestor-propagation rule that over-triggers, a temporal-dead-zone
-crash from declaration order) these tests were written specifically to catch.
+**Automated tests** (`npm test`, `node:test`, no dependencies, 28 tests) cover the parts that
+don't need a live VS Code window: `test/transcriptWatcher.test.js` exercises the transcript-
+tailing logic directly (offset tracking, partial-line buffering, batching, the fast-exchange-
+before-first-tick edge case, and per-session scoping/reset) against fabricated fake
+transcripts; `test/webviewLogic.test.js` and `test/collapse.test.js` extract the actual
+`<script>` block from `treePanel.ts`'s generated HTML verbatim and run it in a stubbed DOM/SVG
+sandbox (`test/webviewLogic.harness.js`), asserting on the real glow/decay/edge-propagation/
+collapse behavior (not a reimplementation of it) by dispatching fake `postMessage`/DOM events
+and reading back computed state; `test/integration.test.js` wires TranscriptWatcher's real
+output straight into the real webview script end-to-end. This is deliberately the primary way
+this extension's logic gets verified — round-tripping every change through a real Extension
+Development Host window by hand doesn't scale as a feedback loop and misses exactly the kind
+of subtle bugs (an ancestor-propagation rule that over-triggers, a temporal-dead-zone crash
+from declaration order, edge glow with backwards opacity) these tests were written
+specifically to catch.
 
 The transcript format itself is Claude Code's internal conversation-persistence schema, not a
 published contract (see the `toprope-agentdev` diary, 2026-08-18-1007) — malformed/drifted
