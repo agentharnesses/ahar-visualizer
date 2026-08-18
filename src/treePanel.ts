@@ -214,6 +214,9 @@ function renderHtml(nodes: VizNode[]): string {
   <div class="row" style="margin-top:4px">▢ directory &nbsp; ● file</div>
   <div class="row"><span class="sq" style="background:var(--vscode-charts-orange)"></span> Recently touched by Claude</div>
 </div>
+<svg id="connectorSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;">
+  <line id="connectorLine" x1="0" y1="0" x2="0" y2="0" stroke="var(--vscode-focusBorder)" stroke-width="1.5" stroke-dasharray="4 3" opacity="0" />
+</svg>
 <div id="tooltip"></div>
 <div id="info"></div>
 <script nonce="${nonce}">
@@ -366,12 +369,49 @@ function renderHtml(nodes: VizNode[]): string {
     if (msg.type === 'step') {
       currentStep = msg.step;
       for (const fp of msg.filePaths || []) {
-        const resolved = resolveToNodeId(fp);
-        if (resolved) lastTouchedStep.set(resolved, currentStep);
+        // Mark the touched node fresh, then walk up and mark every ancestor
+        // fresh too (same step). Without this, only files with their own
+        // node (e.g. a leaf's SKILL.md) would ever register — their
+        // containing directory would stay dark unless a *folded* file
+        // (HARNESS.md/routing) happened to be read instead, which resolves
+        // up to the directory only because it has no node of its own. That
+        // asymmetry is exactly the bug: reading a skill's descriptor should
+        // light up the skill, not just an easy-to-miss leaf node.
+        let resolved = resolveToNodeId(fp);
+        while (resolved) {
+          lastTouchedStep.set(resolved, currentStep);
+          const n = byId.get(resolved);
+          resolved = n ? n.parentId : null;
+        }
       }
       updateGlow();
+      updateConnector();
     }
   });
+
+  const tooltip = document.getElementById('tooltip');
+  const info = document.getElementById('info');
+  const connectorLine = document.getElementById('connectorLine');
+  let selectedEl = null;
+  let hoveredEl = null;
+
+  function updateConnector() {
+    if (!selectedEl || !info.classList.contains('visible')) {
+      connectorLine.setAttribute('opacity', '0');
+      return;
+    }
+    const nodeRect = selectedEl.getBoundingClientRect();
+    const infoRect = info.getBoundingClientRect();
+    const nx = nodeRect.left + nodeRect.width / 2;
+    const ny = nodeRect.top + nodeRect.height / 2;
+    const ix = infoRect.left;
+    const iy = Math.min(Math.max(ny, infoRect.top + 10), infoRect.bottom - 10);
+    connectorLine.setAttribute('x1', String(nx));
+    connectorLine.setAttribute('y1', String(ny));
+    connectorLine.setAttribute('x2', String(ix));
+    connectorLine.setAttribute('y2', String(iy));
+    connectorLine.setAttribute('opacity', '0.8');
+  }
 
   // Pan/zoom state
   let scale = 1, tx = 40, ty = 40;
@@ -379,6 +419,7 @@ function renderHtml(nodes: VizNode[]): string {
 
   function updateTransform() {
     viewport.setAttribute('transform', 'translate(' + tx + ',' + ty + ') scale(' + scale + ')');
+    updateConnector();
   }
   updateTransform();
 
@@ -438,11 +479,6 @@ function renderHtml(nodes: VizNode[]): string {
   document.getElementById('zoomReset').addEventListener('click', fitToView);
   document.getElementById('refreshBtn').addEventListener('click', () => vscode.postMessage({ type: 'refresh' }));
 
-  const tooltip = document.getElementById('tooltip');
-  const info = document.getElementById('info');
-  let selectedEl = null;
-  let hoveredEl = null;
-
   function kindLabel(n) {
     if (n.isDirectory) {
       if (n.kind === 'harness-root') return 'harness root';
@@ -485,12 +521,14 @@ function renderHtml(nodes: VizNode[]): string {
     if (!target) {
       info.classList.remove('visible');
       selectedEl = null;
+      updateConnector();
       return;
     }
     target.classList.add('selected');
     selectedEl = target;
     const n = byId.get(target.getAttribute('data-id'));
     showInfo(n);
+    updateConnector();
   });
 
   svg.addEventListener('dblclick', (e) => {
