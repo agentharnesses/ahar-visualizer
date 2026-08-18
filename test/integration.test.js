@@ -81,6 +81,12 @@ test('reading a plain root-level file in a fresh nested session lights it up in 
     assert.equal(w.nodeGlowOpacity(ROOT + '/.gitignore'), 1, '.gitignore node itself should glow')
     assert.equal(w.nodeGlowOpacity(ROOT), 1, 'root, as .gitignore\'s immediate parent, should glow')
     assert.equal(w.nodeGlowOpacity(ROOT + '/src'), 0, 'unrelated sibling should not glow')
+    assert.equal(w.edgeGlowOpacity(ROOT + '/.gitignore'), 1, 'the edge on the actual touched path should glow')
+    assert.equal(
+      w.edgeGlowOpacity(ROOT + '/src'),
+      0,
+      'the sibling edge must not glow just because root (its parent) is fresh'
+    )
   } finally {
     os.homedir = realHomedir
   }

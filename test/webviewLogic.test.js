@@ -64,7 +64,27 @@ test('a touched path with no node of its own resolves up to its nearest tracked 
   assert.equal(w.nodeGlowOpacity('/root'), 0)
 })
 
-test('independent touches only chain together through ancestors that are independently fresh', () => {
+test('a glowing edge never points at an untouched sibling — regression for a real reported bug', () => {
+  // Hand-testing surfaced this: touching README.md (root's immediate child)
+  // one-hop-marks root fresh, and root has several *other* children besides
+  // README.md. Edge glow was computed purely from "is my parent fresh",
+  // which lit up every one of those sibling edges too — visually, several
+  // glowing connections leading to plain, dark, never-touched boxes. That's
+  // backwards for a tool whose whole point is traceability.
+  const w = runWebview(NODES)
+  w.sendStep(1, ['/root/skills/agent-harnesses/SKILL.md']) // marks SKILL.md + agent-harnesses only
+
+  // The actual touched path's own edge should glow.
+  assert.equal(w.edgeGlowOpacity('/root/skills/agent-harnesses/SKILL.md'), 1)
+  // /root/other is root's child, same as /root/skills is agent-harnesses's
+  // sibling context — neither was touched, so neither edge may glow, even
+  // though root and skills are each a fresh node's parent somewhere in the
+  // tree.
+  assert.equal(w.edgeGlowOpacity('/root/other'), 0)
+  assert.equal(w.nodeGlowOpacity('/root/other'), 0)
+})
+
+test('an edge only glows through a contiguous chain of touched ancestors, not by jumping to a fresh one further up', () => {
   const w = runWebview(NODES)
   // Root's own HARNESS.md is read first — root has no parent, so this only
   // marks root itself.
@@ -72,16 +92,20 @@ test('independent touches only chain together through ancestors that are indepen
   assert.equal(w.nodeGlowOpacity('/root'), 1)
 
   // Later (different step, well within the decay window), a completely
-  // separate leaf's descriptor is read.
+  // separate leaf's descriptor is read — marks SKILL.md + agent-harnesses,
+  // but NOT skills (agent-harnesses's own parent).
   w.sendStep(5, ['/root/skills/agent-harnesses/SKILL.md'])
 
-  // edge(skills -> root): skills itself was never touched, but root was
-  // independently fresh from its own earlier touch (at step 1, now step 5:
-  // 1 - 4/40 = 0.9) — the edge should still glow, because the rule is
-  // "freshness of the parent", full stop.
-  assert.equal(w.edgeGlowOpacity('/root/skills'), 0.9, 'edge up to an independently-fresh root should glow')
-  // But skills itself (the node) never became fresh — it was never touched,
-  // directly or as anyone's immediate parent.
+  // edge(agent-harnesses -> skills): agent-harnesses is on a touched path,
+  // so this edge is eligible to glow — but its *value* is skills's own
+  // freshness, and skills was never touched, so it stays dark.
+  assert.equal(w.edgeGlowOpacity('/root/skills/agent-harnesses'), 0)
+  // edge(skills -> root): skills itself was never touched (not directly,
+  // not as anyone's immediate parent), so this edge doesn't qualify to glow
+  // at all — even though root, further up, is independently fresh. The
+  // chain stops wherever the contiguous touched path stops; it doesn't
+  // jump across a dark node to reach a fresh one beyond it.
+  assert.equal(w.edgeGlowOpacity('/root/skills'), 0)
   assert.equal(w.nodeGlowOpacity('/root/skills'), 0)
 })
 

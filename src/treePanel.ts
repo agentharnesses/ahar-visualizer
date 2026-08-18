@@ -420,11 +420,20 @@ function renderHtml(nodes: VizNode[]): string {
     }
     for (const n of nodes) {
       if (n.parentId === null) continue;
-      // Edge glow equals the freshness of the PARENT — this alone makes glow
-      // propagate up the tree: every ancestor that's still fresh lights the
-      // edge above it, independent of how deep the actual touched node was.
       const edgeGlow = edgeGlowById.get(n.id);
-      if (edgeGlow) edgeGlow.style.opacity = String(freshnessOf(n.parentId));
+      if (!edgeGlow) continue;
+      // Edge glow's *value* is the parent's freshness, but it's gated on the
+      // child having some freshness entry of its own (touched directly, or
+      // marked as an immediate parent via the one-hop rule above). Without
+      // that gate, EVERY child of a fresh node gets a glowing edge leading
+      // to it — including siblings that were never touched at all, which
+      // looks like a connection to nowhere. Gating means an edge only lights
+      // up as part of an actual touched node's own path to its parent, and
+      // "goes up the tree" only continues through ancestors that are
+      // themselves part of that same contiguous chain, not by jumping past
+      // an untouched node to reach a fresh one further up.
+      const childIsOnATouchedPath = lastTouchedStep.has(n.id);
+      edgeGlow.style.opacity = String(childIsOnATouchedPath ? freshnessOf(n.parentId) : 0);
     }
   }
 
