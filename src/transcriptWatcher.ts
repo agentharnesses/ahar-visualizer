@@ -27,7 +27,7 @@ export class TranscriptWatcher {
 
   start(): void {
     this.tick()
-    this.timer = setInterval(() => this.tick(), 1000)
+    this.timer = setInterval(() => this.tick(), 400)
   }
 
   stop(): void {
@@ -68,17 +68,19 @@ export class TranscriptWatcher {
     if (!latest) return
 
     if (latest !== this.currentFile) {
-      // Switch to the newly-active session's transcript. Start from its
-      // current end rather than replaying history, so the visualization
-      // reflects what's happening now, not a full backlog.
+      // Switch to the newly-active session's transcript and read it from the
+      // start, then fall through to process it immediately in this same
+      // tick. A fast exchange (ask a quick question, get an answer) can
+      // complete inside a single poll interval — if we instead jumped to
+      // EOF here and waited for the *next* tick to start reading, that
+      // whole exchange would already be "in the past" and get silently
+      // skipped. Replaying from 0 is also the semantically correct choice
+      // given freshness decays by step count: catching up to the real
+      // current step reproduces the exact freshness state each node should
+      // already be in, not just an approximation of it.
       this.currentFile = latest
-      try {
-        this.offset = fs.statSync(latest).size
-      } catch {
-        this.offset = 0
-      }
+      this.offset = 0
       this.carry = ''
-      return
     }
 
     let size: number
@@ -108,14 +110,24 @@ export class TranscriptWatcher {
     const lines = chunk.split('\n')
     this.carry = lines.pop() ?? ''
 
+    // Batch into one onEvent per tick rather than one per line — matters a
+    // lot the first time we attach to an existing session with a long
+    // history (see the switch-and-replay-from-0 comment above): without
+    // batching, catching up on a multi-thousand-line transcript would fire a
+    // postMessage per line. currentStep still ends up equal to the true
+    // total line count either way, so decay math is unaffected.
+    let touchedAny = false
+    const filePaths: string[] = []
     for (const line of lines) {
       if (!line.trim()) continue
-      this.processLine(line)
+      touchedAny = true
+      this.step++
+      filePaths.push(...this.extractFilePaths(line))
     }
+    if (touchedAny) this.onEvent(this.step, filePaths)
   }
 
-  private processLine(line: string): void {
-    this.step++
+  private extractFilePaths(line: string): string[] {
     const filePaths: string[] = []
     try {
       const obj = JSON.parse(line) as {
@@ -136,6 +148,6 @@ export class TranscriptWatcher {
     } catch {
       // Not JSON, or shape drifted from what we expect — skip this line.
     }
-    this.onEvent(this.step, filePaths)
+    return filePaths
   }
 }
