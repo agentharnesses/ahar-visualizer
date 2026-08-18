@@ -23,7 +23,8 @@ export class TranscriptWatcher {
 
   constructor(
     private readonly rootPath: string,
-    private readonly onEvent: (step: number, filePaths: string[]) => void
+    private readonly onEvent: (step: number, filePaths: string[]) => void,
+    private readonly onDebug: (message: string) => void = () => {}
   ) {}
 
   start(): void {
@@ -38,6 +39,9 @@ export class TranscriptWatcher {
     // actually test with. Scoping to "created since I started watching"
     // makes the watcher track the session that belongs to *this* window.
     this.watcherStartMs = Date.now()
+    this.onDebug(
+      `watcher started · root=${this.rootPath} · projectDir=${this.projectDir()} · cutoff=${new Date(this.watcherStartMs).toISOString()}`
+    )
     this.tick()
     this.timer = setInterval(() => this.tick(), 400)
   }
@@ -55,24 +59,35 @@ export class TranscriptWatcher {
     let entries: string[]
     try {
       entries = fs.readdirSync(this.projectDir()).filter((f) => f.endsWith('.jsonl'))
-    } catch {
+    } catch (err) {
+      this.onDebug(`readdir failed for ${this.projectDir()}: ${String(err)}`)
       return null
+    }
+    if (entries.length === 0) {
+      this.onDebug(`no .jsonl files at all in ${this.projectDir()}`)
     }
     let latest: string | null = null
     let latestMtime = 0
+    const rejected: string[] = []
     for (const name of entries) {
       const full = path.join(this.projectDir(), name)
       try {
         const stat = fs.statSync(full)
         const birth = stat.birthtimeMs || stat.ctimeMs
-        if (birth < this.watcherStartMs) continue // predates this watcher; not ours to follow
+        if (birth < this.watcherStartMs) {
+          rejected.push(`${name} (birth=${new Date(birth).toISOString()}, predates cutoff)`)
+          continue
+        }
         if (stat.mtimeMs > latestMtime) {
           latestMtime = stat.mtimeMs
           latest = full
         }
-      } catch {
-        // file disappeared mid-scan; ignore
+      } catch (err) {
+        rejected.push(`${name} (stat failed: ${String(err)})`)
       }
+    }
+    if (!latest && entries.length > 0) {
+      this.onDebug(`found ${entries.length} .jsonl file(s), none pass the cutoff: ${rejected.join('; ')}`)
     }
     return latest
   }
@@ -92,6 +107,7 @@ export class TranscriptWatcher {
       // given freshness decays by step count: catching up to the real
       // current step reproduces the exact freshness state each node should
       // already be in, not just an approximation of it.
+      this.onDebug(`switched to session file: ${latest}`)
       this.currentFile = latest
       this.offset = 0
       this.carry = ''
@@ -100,7 +116,8 @@ export class TranscriptWatcher {
     let size: number
     try {
       size = fs.statSync(this.currentFile).size
-    } catch {
+    } catch (err) {
+      this.onDebug(`stat failed for current file ${this.currentFile}: ${String(err)}`)
       return
     }
     if (size <= this.offset) return
@@ -110,7 +127,8 @@ export class TranscriptWatcher {
     let fd: number
     try {
       fd = fs.openSync(this.currentFile, 'r')
-    } catch {
+    } catch (err) {
+      this.onDebug(`open failed for ${this.currentFile}: ${String(err)}`)
       return
     }
     try {
@@ -138,7 +156,14 @@ export class TranscriptWatcher {
       this.step++
       filePaths.push(...this.extractFilePaths(line))
     }
-    if (touchedAny) this.onEvent(this.step, filePaths)
+    if (touchedAny) {
+      this.onDebug(
+        `processed ${lines.filter((l) => l.trim()).length} line(s), step now ${this.step}, file touches: ${
+          filePaths.length > 0 ? JSON.stringify(filePaths) : '(none this batch)'
+        }`
+      )
+      this.onEvent(this.step, filePaths)
+    }
   }
 
   private extractFilePaths(line: string): string[] {
@@ -159,8 +184,8 @@ export class TranscriptWatcher {
           }
         }
       }
-    } catch {
-      // Not JSON, or shape drifted from what we expect — skip this line.
+    } catch (err) {
+      this.onDebug(`line failed to parse as JSON (${String(err)}): ${line.slice(0, 120)}`)
     }
     return filePaths
   }

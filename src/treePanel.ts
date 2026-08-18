@@ -1,6 +1,21 @@
+import * as fs from 'node:fs'
 import * as vscode from 'vscode'
 import { buildHarnessIndex, HarnessIndex } from './harness'
 import { TranscriptWatcher } from './transcriptWatcher'
+
+// Fixed, well-known path (not a per-session temp dir) so the debug trail can
+// be read directly from outside the Extension Development Host — e.g. `tail
+// -f /tmp/ahar-vsvis-debug.log` — while iterating on the live-glow pipeline,
+// without needing to relay screenshots of the in-panel log back and forth.
+const DEBUG_LOG_PATH = '/tmp/ahar-vsvis-debug.log'
+
+function appendDebugLog(message: string): void {
+  try {
+    fs.appendFileSync(DEBUG_LOG_PATH, `[${new Date().toISOString()}] ${message}\n`)
+  } catch {
+    // Best-effort only; never let logging itself break the extension.
+  }
+}
 
 interface VizNode {
   id: string
@@ -83,27 +98,47 @@ export class HarnessTreePanel {
     this.panel = panel
     this.rootPath = rootPath
 
+    try {
+      fs.writeFileSync(DEBUG_LOG_PATH, '') // fresh log per panel session
+    } catch {
+      // best-effort
+    }
+    appendDebugLog(`panel constructed · rootPath=${rootPath}`)
+
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables)
     this.panel.webview.onDidReceiveMessage(
-      async (message: { type: string; path?: string }) => {
+      async (message: { type: string; path?: string; message?: string }) => {
         if (message.type === 'openFile' && message.path) {
           const uri = vscode.Uri.file(message.path)
           await vscode.window.showTextDocument(uri, { preview: true })
           await vscode.commands.executeCommand('revealInExplorer', uri)
         } else if (message.type === 'refresh') {
           this.refresh()
+        } else if (message.type === 'clientDebug' && message.message) {
+          appendDebugLog(`[client] ${message.message}`)
         }
       },
       null,
       this.disposables
     )
 
-    this.watcher = new TranscriptWatcher(rootPath, (step, filePaths) => {
-      void this.panel.webview.postMessage({ type: 'step', step, filePaths })
-    })
-    this.watcher.start()
-
+    // Render first so the webview's script is loaded (and its message
+    // listener attached) before the watcher can post anything to it —
+    // otherwise the earliest debug/step messages have nothing listening yet
+    // and are silently dropped.
     this.refresh()
+
+    this.watcher = new TranscriptWatcher(
+      rootPath,
+      (step, filePaths) => {
+        void this.panel.webview.postMessage({ type: 'step', step, filePaths })
+      },
+      (message) => {
+        appendDebugLog(`[host] ${message}`)
+        void this.panel.webview.postMessage({ type: 'debug', source: 'host', message })
+      }
+    )
+    this.watcher.start()
   }
 
   refresh(): void {
@@ -165,7 +200,7 @@ function renderHtml(nodes: VizNode[]): string {
   }
   #info button:hover { background: var(--vscode-button-hoverBackground); }
   #legend {
-    position: absolute; bottom: 12px; left: 12px; background: var(--vscode-editorWidget-background);
+    position: absolute; bottom: 172px; left: 12px; background: var(--vscode-editorWidget-background);
     border: 1px solid var(--vscode-widget-border, #454545); border-radius: 6px; padding: 8px 10px; font-size: 11px;
     color: var(--vscode-descriptionForeground);
   }
@@ -180,6 +215,28 @@ function renderHtml(nodes: VizNode[]): string {
     border: 1px solid var(--vscode-widget-border, #454545); border-radius: 4px; width: 26px; height: 26px; cursor: pointer;
   }
   #toolbar button:hover { background: var(--vscode-list-hoverBackground); }
+  #debugLog {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 160px; z-index: 6;
+    background: var(--vscode-editor-background); border-top: 1px solid var(--vscode-widget-border, #454545);
+    display: flex; flex-direction: column;
+  }
+  #debugLogHeader {
+    display: flex; align-items: center; justify-content: space-between; padding: 3px 8px;
+    border-bottom: 1px solid var(--vscode-widget-border, #454545); font-size: 11px;
+    color: var(--vscode-descriptionForeground); flex-shrink: 0;
+  }
+  #debugLogHeader button {
+    background: transparent; color: var(--vscode-descriptionForeground); border: none; cursor: pointer; font-size: 11px;
+    text-decoration: underline;
+  }
+  #debugLogBody {
+    flex: 1; overflow-y: auto; padding: 4px 8px; font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 10.5px; line-height: 1.5;
+  }
+  #debugLogBody .line { white-space: pre-wrap; word-break: break-all; }
+  #debugLogBody .host { color: var(--vscode-charts-blue); }
+  #debugLogBody .client { color: var(--vscode-charts-green); }
+  #debugLogBody .step { color: var(--vscode-descriptionForeground); }
 </style>
 </head>
 <body>
@@ -219,6 +276,13 @@ function renderHtml(nodes: VizNode[]): string {
 </svg>
 <div id="tooltip"></div>
 <div id="info"></div>
+<div id="debugLog">
+  <div id="debugLogHeader">
+    <span>Debug log — blue: transcript watcher, green: this panel's own touch resolution</span>
+    <button id="debugLogClear">clear</button>
+  </div>
+  <div id="debugLogBody"></div>
+</div>
 <script nonce="${nonce}">
 (function () {
   const vscode = acquireVsCodeApi();
@@ -364,10 +428,32 @@ function renderHtml(nodes: VizNode[]): string {
     }
   }
 
+  const debugLogBody = document.getElementById('debugLogBody');
+  function logDebug(source, message) {
+    const line = document.createElement('div');
+    line.className = 'line ' + source;
+    line.textContent = '[' + source + '] ' + message;
+    debugLogBody.appendChild(line);
+    while (debugLogBody.children.length > 300) debugLogBody.removeChild(debugLogBody.firstChild);
+    debugLogBody.scrollTop = debugLogBody.scrollHeight;
+    // Relay client-side lines back to the extension host so they land in the
+    // same unified /tmp/ahar-vsvis-debug.log as the host-side ones — 'host'
+    // messages already originated there, so only 'client' ones get relayed
+    // back (otherwise every host message would echo forever).
+    if (source === 'client') vscode.postMessage({ type: 'clientDebug', message: message });
+  }
+  document.getElementById('debugLogClear').addEventListener('click', () => { debugLogBody.innerHTML = ''; });
+  logDebug('client', 'panel script loaded (' + nodes.length + ' nodes), waiting for the transcript watcher...');
+
   window.addEventListener('message', (event) => {
     const msg = event.data;
+    if (msg.type === 'debug') {
+      logDebug(msg.source || 'host', msg.message);
+      return;
+    }
     if (msg.type === 'step') {
       currentStep = msg.step;
+      const resolvedTouches = [];
       for (const fp of msg.filePaths || []) {
         // Mark the touched node fresh, plus its immediate containing
         // directory (one hop up), same step. The one-hop part matters for
@@ -389,7 +475,13 @@ function renderHtml(nodes: VizNode[]): string {
           lastTouchedStep.set(resolved, currentStep);
           const parentId = byId.get(resolved)?.parentId;
           if (parentId) lastTouchedStep.set(parentId, currentStep);
+          resolvedTouches.push(fp + ' -> ' + resolved + (parentId ? ' (+parent ' + parentId + ')' : ' (root, no parent)'));
+        } else {
+          resolvedTouches.push(fp + ' -> UNRESOLVED (outside this tree, or no node matched)');
         }
+      }
+      if ((msg.filePaths || []).length > 0) {
+        logDebug('client', 'step ' + currentStep + ': ' + resolvedTouches.join(' | '));
       }
       updateGlow();
       updateConnector();

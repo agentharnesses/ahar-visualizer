@@ -30,7 +30,7 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "npm run compile && node --test test/"
+    "test": "npm run compile && node --test test/*.test.js"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
