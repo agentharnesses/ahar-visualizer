@@ -1,7 +1,18 @@
 import * as fs from 'node:fs'
 import * as vscode from 'vscode'
+import { DEFAULT_DEV_QUEUE_DIR, DevQueueWatcher } from './devQueue'
 import { HarnessTreePanel } from './treePanel'
 import { SidebarViewProvider } from './sidebarView'
+
+/** Shared by the URI handler and the dev-mode queue — both accept an externally-supplied
+ *  directory and should fail the same way on a bad one. */
+function isValidRootDir(candidate: string): boolean {
+  try {
+    return fs.statSync(candidate).isDirectory()
+  } catch {
+    return false
+  }
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   const workspaceFolders = vscode.workspace.workspaceFolders
@@ -73,7 +84,7 @@ export function activate(context: vscode.ExtensionContext): void {
           void vscode.window.showErrorMessage('ahar-visualizer: openTree URI missing required "root" parameter')
           return
         }
-        if (!fs.existsSync(customRootPath) || !fs.statSync(customRootPath).isDirectory()) {
+        if (!isValidRootDir(customRootPath)) {
           void vscode.window.showErrorMessage(
             `ahar-visualizer: root path does not exist or is not a directory: ${customRootPath}`
           )
@@ -87,6 +98,29 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     })
   )
+
+  // Dev-mode-only alternative to the URI handler above: a vscode:// URL always routes to the
+  // single registered Code app bundle regardless of which --user-data-dir instance is running
+  // it, so it can't reliably reach a disposable Extension Development Host used to test this
+  // extension itself (confirmed empirically — see ahar-visualizer-dev-workflow.md in the parent
+  // meta-repo). Gating on extensionMode means this never runs for a real installed extension.
+  if (context.extensionMode === vscode.ExtensionMode.Development) {
+    const devQueue = new DevQueueWatcher(DEFAULT_DEV_QUEUE_DIR, (request) => {
+      if (!isValidRootDir(request.rootPath)) {
+        void vscode.window.showErrorMessage(
+          `ahar-visualizer (dev queue): root path does not exist or is not a directory: ${request.rootPath}`
+        )
+        return
+      }
+      HarnessTreePanel.createCustom({
+        rootPath: request.rootPath,
+        sessionFile: request.sessionFile,
+        label: request.label
+      })
+    })
+    devQueue.start()
+    context.subscriptions.push({ dispose: () => devQueue.stop() })
+  }
 
   HarnessTreePanel.createOrShow(rootPath)
 }
