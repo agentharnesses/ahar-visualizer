@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
-import { buildHarnessIndex, HarnessIndex } from './harness'
+import { buildHarnessIndex, HarnessIndex, isSkippedDirName } from './harness'
 import { buildHarnessHierarchy, HierarchyNode } from './hierarchy'
 import { TranscriptWatcher } from './transcriptWatcher'
 
@@ -121,6 +121,20 @@ export function readCollapseConfig(): CollapseConfig {
   }
 }
 
+/** True if `fsPath` (a file/directory that just appeared or disappeared)
+ *  lies inside a directory the harness scan itself would already skip
+ *  (node_modules, out, .git, ...) — such events can't possibly change what
+ *  the tree shows, so the workspace watcher drops them before they ever
+ *  trigger a rescan. Deliberately narrower than "every dotfile": harness.ts
+ *  treats plenty of dotfiles (.harnessleaf, .gitignore as a plain node,
+ *  etc.) as meaningful, so filtering has to match its actual skip list, not
+ *  a broader guess. */
+function isIgnoredWatchPath(fsPath: string, rootPath: string): boolean {
+  const rel = path.relative(rootPath, fsPath)
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return true // outside the workspace root
+  return rel.split(path.sep).some((segment) => isSkippedDirName(segment))
+}
+
 export function getNonce(): string {
   let text = ''
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
@@ -135,6 +149,7 @@ export class HarnessTreePanel {
   private readonly rootPath: string
   private readonly disposables: vscode.Disposable[] = []
   private readonly watcher: TranscriptWatcher
+  private refreshDebounceTimer: NodeJS.Timeout | undefined
 
   static createOrShow(rootPath: string): void {
     if (HarnessTreePanel.current) {
@@ -197,7 +212,7 @@ export class HarnessTreePanel {
     // listener attached) before the watcher can post anything to it —
     // otherwise the earliest debug/step messages have nothing listening yet
     // and are silently dropped.
-    this.refresh()
+    this.renderFull()
 
     this.watcher = new TranscriptWatcher(
       rootPath,
@@ -214,18 +229,55 @@ export class HarnessTreePanel {
       vscode.workspace.getConfiguration('aharVisualizer').get<number>('rescanIntervalMs', 400)
     )
     this.watcher.start()
+
+    // Live file-create/delete watching: a debounced refresh() call so a
+    // burst of changes (a git checkout, an npm install) collapses into one
+    // rescan instead of one per event. Deliberately not watching onDidChange
+    // (content edits) — those never alter which nodes exist, so reacting to
+    // them would just be noise. Native VS Code file watching (not polling
+    // like TranscriptWatcher above) is the right tool here since ordinary
+    // workspace files are what it's built for.
+    const fsWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(rootPath, '**/*'))
+    const scheduleRefresh = (uri: vscode.Uri) => {
+      if (isIgnoredWatchPath(uri.fsPath, this.rootPath)) return
+      if (this.refreshDebounceTimer) clearTimeout(this.refreshDebounceTimer)
+      this.refreshDebounceTimer = setTimeout(() => this.refresh(), 300)
+    }
+    fsWatcher.onDidCreate(scheduleRefresh, null, this.disposables)
+    fsWatcher.onDidDelete(scheduleRefresh, null, this.disposables)
+    this.disposables.push(fsWatcher)
   }
 
-  refresh(): void {
+  /** Full webview HTML (re)render — (re)creates the DOM and the inline
+   *  client script from scratch, so it resets pan/zoom, collapse state, and
+   *  the legend/harness-navigator open/closed state. Only ever appropriate
+   *  once, at panel construction (nothing to preserve yet); every later
+   *  update — the refresh button, the workspace watcher, a settings change —
+   *  goes through refresh() instead, which leaves all of that alone. */
+  private renderFull(): void {
     const index = buildHarnessIndex(this.rootPath)
     const nodes = serialize(index, this.rootPath)
     const harnessNodes = serializeHierarchyList(buildHarnessHierarchy(index, this.rootPath), this.rootPath)
     this.panel.webview.html = renderHtml(nodes, harnessNodes, readCollapseConfig())
   }
 
+  /** Re-scans the workspace and pushes the result into the *already-running*
+   *  webview via postMessage, instead of replacing its HTML — so pan/zoom,
+   *  manual collapse/expand, the legend, and the harness navigator's
+   *  open/closed state all survive. The client merges the new node set in
+   *  place (see applyNodesUpdate in the webview script) rather than
+   *  rebuilding from a blank slate. */
+  refresh(): void {
+    const index = buildHarnessIndex(this.rootPath)
+    const nodes = serialize(index, this.rootPath)
+    const harnessNodes = serializeHierarchyList(buildHarnessHierarchy(index, this.rootPath), this.rootPath)
+    void this.panel.webview.postMessage({ type: 'nodesUpdate', nodes, harnessNodes, config: readCollapseConfig() })
+  }
+
   private dispose(): void {
     HarnessTreePanel.current = undefined
     this.watcher.stop()
+    if (this.refreshDebounceTimer) clearTimeout(this.refreshDebounceTimer)
     this.panel.dispose()
     while (this.disposables.length) {
       this.disposables.pop()?.dispose()
@@ -533,8 +585,11 @@ function renderHtml(nodes: VizNode[], harnessNodes: VizHarnessNode[], collapseCo
 (function () {
   const vscode = acquireVsCodeApi();
   const nodes = ${data};
-  const harnessNodes = ${harnessData};
-  const config = ${configData};
+  // Reassigned in place by applyNodesUpdate() on every refresh/live-watch
+  // update — see there for why (nodesUpdate keeps the rest of this script's
+  // state, e.g. pan/zoom and collapse, alive instead of a full page reload).
+  let harnessNodes = ${harnessData};
+  let config = ${configData};
 
   const SIZE = 16, H_GAP = 12, V_GAP = 42;
   const DECAY_STEPS = 40; // freshness fades to 0 over this many observed transcript lines, not wall-clock time
@@ -926,11 +981,28 @@ function renderHtml(nodes: VizNode[], harnessNodes: VizHarnessNode[], collapseCo
     updateTransform(); // applies the tx anchor-compensation above; also refreshes the connector line
   }
 
-  /** Fully expands 'id' (removes it from collapsed), but re-collapses just
-   *  enough of the newly-revealed subtree — deepest directories first — to
-   *  keep what a single expand action reveals under config.maxNodesOnExpand.
-   *  So one click on a huge collapsed subtree can never dump thousands of
-   *  nodes onto the canvas at once.
+  /** Removes id and every directory anywhere in its subtree from the
+   *  collapsed set, regardless of whether each was collapsed independently
+   *  of id itself — e.g. a child the user collapsed on its own before
+   *  collapsing (and now re-expanding) its ancestor. Without this,
+   *  collapseToFit()'s traversal below stops at any already-collapsed
+   *  descendant and never revisits it, so "expand subtree" would leave that
+   *  one child stuck collapsed forever. Walks the real child list, not the
+   *  currently-*visible* one, precisely so it reaches descendants hidden
+   *  under a collapsed node. */
+  function clearCollapsedSubtree(id) {
+    collapsed.delete(id);
+    for (const childId of childrenOf.get(id) || []) {
+      const child = byId.get(childId);
+      if (child.isDirectory) clearCollapsedSubtree(childId);
+    }
+  }
+
+  /** Fully expands 'id' — including every descendant, however it got
+   *  collapsed — but re-collapses just enough of the newly-revealed subtree
+   *  — deepest directories first — to keep what a single expand action
+   *  reveals under config.maxNodesOnExpand. So one click on a huge collapsed
+   *  subtree can never dump thousands of nodes onto the canvas at once.
    *
    *  Note: collapseToFit() can only hide *nested directories*, so a
    *  directory whose children are all flat files (no subdirectories to
@@ -939,7 +1011,7 @@ function renderHtml(nodes: VizNode[], harnessNodes: VizHarnessNode[], collapseCo
    *  auto-expanding in the first place; this only limits what a manual
    *  expand can cascade into further down. */
   function expandWithinCap(id) {
-    collapsed.delete(id);
+    clearCollapsedSubtree(id);
     collapseToFit(id, config.maxNodesOnExpand, collapsed);
   }
 
@@ -1045,29 +1117,35 @@ function renderHtml(nodes: VizNode[], harnessNodes: VizHarnessNode[], collapseCo
     return chain;
   }
 
-  /** Every ancestor id of 'id', root-first, INCLUDING 'id' itself. */
-  function chainFromRoot(id) {
-    return strictAncestorsOf(id).concat([id]);
-  }
-
-  /** "Collapse all but that harness": expands every node on the path from
-   *  root to targetId, collapses every sibling branch off that path, then
-   *  caps whatever targetId's own subtree reveals the same way a manual
-   *  expand does (config.maxNodesOnExpand via collapseToFit) — the "max
-   *  nodes rules" this tree obeys everywhere else. */
+  /** "Collapse all but that harness": as if the whole tree were collapsed,
+   *  then just the path from root down to targetId were opened, then
+   *  "Expand subtree" were clicked on targetId itself. Concretely: expands
+   *  every node strictly above targetId on that path, collapses every
+   *  sibling branch off it, and fully expands targetId's own subtree via
+   *  expandWithinCap() — the same full-subtree-regardless-of-prior-state
+   *  expand "Expand subtree" uses, capped by the same maxNodesOnExpand.
+   *
+   *  targetId's own children are deliberately NOT among the "collapse every
+   *  sibling branch off the path" children — they're what's being isolated
+   *  *to*, not an off-path branch to hide. An earlier version of this
+   *  function looped over targetId too when collapsing off-path children,
+   *  which collapsed targetId's entire subtree right before collapseToFit()
+   *  ran — and since collapseToFit() only ever *adds* to the collapsed set,
+   *  never removes from it, that meant Isolate could never actually reveal
+   *  the thing it was supposedly isolating. */
   function isolateNode(targetId) {
     if (!byId.has(targetId)) return;
-    const chain = chainFromRoot(targetId);
-    const onPath = new Set(chain);
-    for (const id of chain) collapsed.delete(id);
-    for (const id of chain) {
+    const ancestors = strictAncestorsOf(targetId);
+    const onPath = new Set(ancestors.concat([targetId]));
+    for (const id of ancestors) collapsed.delete(id);
+    for (const id of ancestors) {
       for (const childId of childrenOf.get(id) || []) {
         if (onPath.has(childId)) continue;
         const child = byId.get(childId);
         if (child.isDirectory && (childrenOf.get(childId) || []).length > 0) collapsed.add(childId);
       }
     }
-    collapseToFit(targetId, config.maxNodesOnExpand, collapsed);
+    expandWithinCap(targetId);
     renderTree(targetId);
     goTo(targetId);
   }
@@ -1318,10 +1396,80 @@ function renderHtml(nodes: VizNode[], harnessNodes: VizHarnessNode[], collapseCo
   renderTree();
   renderHarnessList(); // independent of collapse state, so only needs building once per refresh
 
+  /** Merges a fresh nodes/harnessNodes/config snapshot from the host (the
+   *  refresh button, the live workspace watcher, or a settings change) into
+   *  the *running* graph in place, instead of the old approach of the host
+   *  replacing the whole webview HTML — which reset pan/zoom, every manual
+   *  collapse/expand, and the legend/harness-navigator open/closed state on
+   *  every single refresh. Existing nodes' collapse state is never touched
+   *  here, even ones whose metadata changed; only brand-new directories get
+   *  an initial auto-collapse decision, same rule a fresh load would apply,
+   *  so a big new subtree can't dump hundreds of nodes onto the canvas at
+   *  once. renderTree() already compensates tx to keep root visually
+   *  anchored (see the lastRootX comment above) — that applies here for
+   *  free since this goes through the same render path collapse/expand
+   *  toggles do. */
+  function applyNodesUpdate(newNodes, newHarnessNodes, newConfig) {
+    const newById = new Map(newNodes.map((n) => [n.id, n]));
+
+    for (const id of Array.from(byId.keys())) {
+      if (!newById.has(id)) {
+        byId.delete(id);
+        childrenOf.delete(id);
+        collapsed.delete(id);
+        lastTouchedStep.delete(id);
+      }
+    }
+
+    const addedIds = [];
+    for (const n of newNodes) {
+      if (!byId.has(n.id)) addedIds.push(n.id);
+      byId.set(n.id, n);
+      if (!childrenOf.has(n.id)) childrenOf.set(n.id, []);
+    }
+
+    // Rebuilding parent -> children edges from scratch is the simplest way
+    // to stay correct after arbitrary adds/removes, and cheap — O(total
+    // nodes), the same cost applyNodesUpdate already pays elsewhere.
+    for (const kids of childrenOf.values()) kids.length = 0;
+    let newRoot = null;
+    for (const n of newNodes) {
+      if (n.parentId === null) newRoot = n;
+      else if (childrenOf.has(n.parentId)) childrenOf.get(n.parentId).push(n.id);
+    }
+    root = newRoot ? byId.get(newRoot.id) : null;
+
+    config = newConfig;
+    harnessNodes = newHarnessNodes;
+
+    if (addedIds.length > 0 && root) {
+      const depths = depthOfEachNode();
+      for (const id of addedIds) {
+        const n = byId.get(id);
+        const kids = childrenOf.get(id) || [];
+        if (n.isDirectory && kids.length > 0) {
+          const depth = depths.get(id) ?? 0;
+          if (depth >= config.maxDepth || kids.length > config.maxChildrenBeforeCollapse) {
+            collapsed.add(id);
+          }
+        }
+      }
+    }
+
+    const previousSelectedId = selectedEl ? selectedEl.getAttribute('data-id') : null;
+    renderTree(previousSelectedId);
+    renderHarnessList();
+  }
+
   window.addEventListener('message', (event) => {
     const msg = event.data;
     if (msg.type === 'debug') {
       logDebug(msg.source || 'host', msg.message);
+      return;
+    }
+    if (msg.type === 'nodesUpdate') {
+      applyNodesUpdate(msg.nodes, msg.harnessNodes, msg.config);
+      logDebug('client', 'nodesUpdate: ' + msg.nodes.length + ' node(s) now in tree');
       return;
     }
     if (msg.type === 'sessionReset') {

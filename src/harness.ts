@@ -47,6 +47,13 @@ const SKIP_DIR_NAMES = new Set([
   'venv'
 ])
 
+/** Exposed so callers outside this module (e.g. the workspace file watcher
+ *  that triggers a live tree refresh) can skip the same directories this
+ *  scan already ignores, instead of re-deriving or duplicating the list. */
+export function isSkippedDirName(name: string): boolean {
+  return SKIP_DIR_NAMES.has(name)
+}
+
 const RELEVANT_KINDS = new Set<HarnessKind>([
   'harness-root',
   'leaf',

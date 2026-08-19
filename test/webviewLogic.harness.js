@@ -39,18 +39,21 @@ function extractScript(fakeNodes, fakeConfig, fakeHarnessNodes) {
   }
   let script = src.slice(start, end)
   const nodesMarker = 'const nodes = ${data};'
-  const harnessNodesMarker = 'const harnessNodes = ${harnessData};'
-  const configMarker = 'const config = ${configData};'
+  const harnessNodesMarker = 'let harnessNodes = ${harnessData};'
+  const configMarker = 'let config = ${configData};'
   if (!script.includes(nodesMarker) || !script.includes(harnessNodesMarker) || !script.includes(configMarker)) {
     throw new Error('Could not find node-data/harness-data/config injection point in treePanel.ts — extraction markers may be stale')
   }
   script = script.replace(nodesMarker, 'const nodes = ' + JSON.stringify(fakeNodes) + ';')
-  script = script.replace(harnessNodesMarker, 'const harnessNodes = ' + JSON.stringify(fakeHarnessNodes || []) + ';')
-  script = script.replace(configMarker, 'const config = ' + JSON.stringify(fakeConfig || DISABLED_COLLAPSE_CONFIG) + ';')
+  script = script.replace(harnessNodesMarker, 'let harnessNodes = ' + JSON.stringify(fakeHarnessNodes || []) + ';')
+  script = script.replace(configMarker, 'let config = ' + JSON.stringify(fakeConfig || DISABLED_COLLAPSE_CONFIG) + ';')
   return script
 }
 
-function makeEl(tag) {
+/** `byIdMap` is optional (the standalone exported makeEl has no map to
+ *  reset), but runWebview's factories always pass theirs — see the
+ *  innerHTML setter below for why it matters. */
+function makeEl(tag, byIdMap) {
   const el = {
     tag,
     attrs: {},
@@ -119,6 +122,24 @@ function makeEl(tag) {
   Object.defineProperty(el, 'innerHTML', {
     set(v) {
       this._html = v
+      // Real DOM: assigning innerHTML destroys the old subtree, so any id
+      // in the new markup refers to a brand-new element — including fresh
+      // (empty) event listeners. getElementById below caches elements by id
+      // forever, so without this, a panel that gets redrawn more than once
+      // (e.g. showInfo(), called again on every reselect after a re-render)
+      // would keep stacking new listeners onto the *same* long-lived fake
+      // element on every redraw — cbtn.addEventListener() from redraw #2
+      // stacking on top of redraw #1's, and so on. A click then fires every
+      // stacked listener, and if that listener's own effect (a collapse
+      // toggle, here) triggers another redraw, each firing registers yet
+      // another listener *during* the very iteration that's calling them —
+      // an unbounded, self-feeding loop. Deleting the cache entry here so
+      // the next getElementById() call manufactures a genuinely fresh
+      // element is what a real browser's innerHTML reassignment gives you
+      // for free.
+      if (byIdMap) {
+        for (const m of String(v).matchAll(/\sid="([^"]+)"/g)) delete byIdMap[m[1]]
+      }
     },
     get() {
       return this._html
@@ -138,10 +159,10 @@ function runWebview(fakeNodes, fakeConfig, fakeHarnessNodes) {
 
   const sandbox = {
     document: {
-      createElementNS: (_ns, tag) => makeEl(tag),
-      createElement: (tag) => makeEl(tag),
+      createElementNS: (_ns, tag) => makeEl(tag, byIdMap),
+      createElement: (tag) => makeEl(tag, byIdMap),
       getElementById: (id) => {
-        if (!byIdMap[id]) byIdMap[id] = makeEl('div')
+        if (!byIdMap[id]) byIdMap[id] = makeEl('div', byIdMap)
         return byIdMap[id]
       }
     },
@@ -179,6 +200,25 @@ function runWebview(fakeNodes, fakeConfig, fakeHarnessNodes) {
 
   function sendSessionReset() {
     for (const cb of messageListeners) cb({ data: { type: 'sessionReset' } })
+  }
+
+  /** Simulates the host pushing a fresh node/harness/config snapshot —
+   *  what refresh() (manual refresh button, live workspace watcher, or a
+   *  settings change) sends in the real extension, instead of the old
+   *  full-HTML-reload approach. Omitted args default the same way the
+   *  initial load does (empty harness list, effectively-off auto-collapse),
+   *  so a test only needs to pass what it actually cares about. */
+  function sendNodesUpdate(newNodes, newHarnessNodes, newConfig) {
+    for (const cb of messageListeners) {
+      cb({
+        data: {
+          type: 'nodesUpdate',
+          nodes: newNodes,
+          harnessNodes: newHarnessNodes || [],
+          config: newConfig || DISABLED_COLLAPSE_CONFIG
+        }
+      })
+    }
   }
 
   function nodeGlowOpacity(nodeId) {
@@ -266,11 +306,11 @@ function runWebview(fakeNodes, fakeConfig, fakeHarnessNodes) {
    *  sandbox, so anything that depends on actual on-screen size (fitToView,
    *  chiefly) needs its inputs faked explicitly per-test. */
   function setElementRect(elementId, rect) {
-    const el = byIdMap[elementId] || (byIdMap[elementId] = makeEl('div'))
+    const el = byIdMap[elementId] || (byIdMap[elementId] = makeEl('div', byIdMap))
     el.getBoundingClientRect = () => rect
   }
   function setElementBBox(elementId, bbox) {
-    const el = byIdMap[elementId] || (byIdMap[elementId] = makeEl('div'))
+    const el = byIdMap[elementId] || (byIdMap[elementId] = makeEl('div', byIdMap))
     el.getBBox = () => bbox
   }
 
@@ -379,6 +419,7 @@ function runWebview(fakeNodes, fakeConfig, fakeHarnessNodes) {
     sendStep,
     sendDebug,
     sendSessionReset,
+    sendNodesUpdate,
     nodeGlowOpacity,
     nodeScreenX,
     edgeGlowOpacity,

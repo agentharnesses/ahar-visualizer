@@ -133,3 +133,48 @@ test('Isolating the root harness is a harmless no-op that just re-affirms the de
   assert.doesNotThrow(() => w.clickHarnessAction('/root', 'isolate'))
   assert.equal(w.isSelectedNode('/root'), true)
 })
+
+// isolateFixture()'s target only has one child, a plain file — never enough
+// to expose a bug that specifically mishandles a DIRECTORY child of the
+// isolated target (files are never collapsible, so a broken "collapse
+// target's own children" path would still look fine there). This fixture
+// gives target a real subdirectory of its own, several layers deep, so
+// "isolate must fully expand the target's own subtree" is actually checked.
+function isolateFixtureWithNestedTarget() {
+  const nodes = [
+    { id: '/root', parentId: null, name: 'root', isDirectory: true, kind: 'harness-root' },
+    { id: '/root/keep', parentId: '/root', name: 'keep', isDirectory: true, kind: 'group' },
+    { id: '/root/keep/target', parentId: '/root/keep', name: 'target', isDirectory: true, kind: 'harness-root' },
+    { id: '/root/keep/target/sub', parentId: '/root/keep/target', name: 'sub', isDirectory: true, kind: 'group' },
+    { id: '/root/keep/target/sub/deep', parentId: '/root/keep/target/sub', name: 'deep.ts', isDirectory: false, kind: 'file' },
+    { id: '/root/other', parentId: '/root', name: 'other', isDirectory: true, kind: 'group' }
+  ]
+  const harnessNodes = [
+    { id: '/root', parentId: null, name: 'root', relPath: '.' },
+    { id: '/root/keep/target', parentId: '/root', name: 'target', relPath: 'keep/target' }
+  ]
+  return { nodes, harnessNodes }
+}
+
+test('Isolate fully expands the target\'s own subtree, including a nested subdirectory, rather than collapsing it', () => {
+  const { nodes, harnessNodes } = isolateFixtureWithNestedTarget()
+  const w = runWebview(nodes, DISABLED_COLLAPSE_CONFIG, harnessNodes)
+
+  w.clickHarnessAction('/root/keep/target', 'isolate')
+
+  assert.equal(w.isCollapsedNode('/root/keep/target/sub'), false, 'a directory inside the isolated target must not end up collapsed')
+  assert.equal(w.isRendered('/root/keep/target/sub/deep'), true)
+})
+
+test('Isolate expands a target subdirectory even if it was collapsed independently beforehand', () => {
+  const { nodes, harnessNodes } = isolateFixtureWithNestedTarget()
+  const w = runWebview(nodes, DISABLED_COLLAPSE_CONFIG, harnessNodes)
+
+  w.dblclickNode('/root/keep/target/sub') // collapsed on its own, before ever isolating target
+  assert.equal(w.isCollapsedNode('/root/keep/target/sub'), true)
+
+  w.clickHarnessAction('/root/keep/target', 'isolate')
+
+  assert.equal(w.isCollapsedNode('/root/keep/target/sub'), false, 'isolate must expand the whole target subtree regardless of prior collapse state')
+  assert.equal(w.isRendered('/root/keep/target/sub/deep'), true)
+})
