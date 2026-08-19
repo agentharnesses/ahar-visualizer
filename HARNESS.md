@@ -21,6 +21,12 @@ Five source files carry almost all the logic:
 
 The stub DOM's `getBoundingClientRect()`/`getBBox()` return fixed values regardless of actual content — real layout-dependent behavior (the `fitToView` centering math, anything visual) needs a real VS Code window to check. See `skills/dev-preview/SKILL.md` for how to do that without risking whatever session is running the check.
 
+## Packaging & Release
+
+Not on the Marketplace — distributed as a `.vsix` built by a tag-triggered GitHub Actions
+workflow. See `references/release-process.md` for the full mechanics (packaging, the CI
+workflow, cutting a release, how end users install it).
+
 ## Skills
 
 - See `skills/SKILLS.md` for the full index.
