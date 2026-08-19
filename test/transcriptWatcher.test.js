@@ -31,8 +31,10 @@ function projectDirFor(home, rootPath) {
   return dir
 }
 
-function readToolUseLine(name, filePath) {
-  return JSON.stringify({ message: { content: [{ type: 'tool_use', name, input: { file_path: filePath } }] } })
+function readToolUseLine(name, filePath, cwd) {
+  const obj = { message: { content: [{ type: 'tool_use', name, input: { file_path: filePath } }] } }
+  if (cwd !== undefined) obj.cwd = cwd
+  return JSON.stringify(obj)
 }
 
 const ROOT = '/fake/workspace/root'
@@ -56,6 +58,41 @@ test('project dir slug replaces every non-alphanumeric character, not just /', (
 
     assert.equal(events.length, 1, 'watcher should find the session under the correctly-slugged project dir')
     assert.deepEqual(events[0].filePaths, [rootWithSpecialChars + '/file.ts'])
+  })
+})
+
+test('resolves a relative file_path against the transcript line\'s own cwd', () => {
+  // Regression: the model doesn't always pass Read/Edit/Write an absolute file_path — confirmed
+  // live (see toprope-agentdev diary 2026-08-19-1825). Without resolving against `cwd`, a
+  // relative path never string-matches any node id (always absolute), and that touch is
+  // silently lost rather than lighting up the tree.
+  const home = fakeHome()
+  withFakeHome(home, () => {
+    const dir = projectDirFor(home, ROOT)
+    const jsonl = path.join(dir, 'sess.jsonl')
+    fs.writeFileSync(jsonl, readToolUseLine('Read', './services/returns/foo.py', ROOT) + '\n')
+
+    const events = []
+    const w = new TranscriptWatcher(ROOT, (step, filePaths) => events.push({ step, filePaths }))
+    w['tick']()
+
+    assert.equal(events.length, 1)
+    assert.deepEqual(events[0].filePaths, [ROOT + '/services/returns/foo.py'])
+  })
+})
+
+test('leaves an already-absolute file_path alone even when cwd is present', () => {
+  const home = fakeHome()
+  withFakeHome(home, () => {
+    const dir = projectDirFor(home, ROOT)
+    const jsonl = path.join(dir, 'sess.jsonl')
+    fs.writeFileSync(jsonl, readToolUseLine('Read', ROOT + '/HARNESS.md', ROOT) + '\n')
+
+    const events = []
+    const w = new TranscriptWatcher(ROOT, (step, filePaths) => events.push({ step, filePaths }))
+    w['tick']()
+
+    assert.deepEqual(events[0].filePaths, [ROOT + '/HARNESS.md'])
   })
 })
 

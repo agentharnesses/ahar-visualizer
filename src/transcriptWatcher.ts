@@ -199,6 +199,7 @@ export class TranscriptWatcher {
     const filePaths: string[] = []
     try {
       const obj = JSON.parse(line) as {
+        cwd?: string
         message?: { content?: Array<{ type?: string; name?: string; input?: { file_path?: string } }> }
       }
       const content = obj.message?.content
@@ -209,7 +210,13 @@ export class TranscriptWatcher {
             (block.name === 'Read' || block.name === 'Edit' || block.name === 'Write') &&
             typeof block.input?.file_path === 'string'
           ) {
-            filePaths.push(block.input.file_path)
+            // The model doesn't always pass an absolute file_path — confirmed empirically, a
+            // real run recorded plain "./services/returns/foo.py" for a Read call. Every
+            // transcript line carries its own `cwd`, though, so resolve against that rather than
+            // assuming absolute; without this, resolveToNodeId's prefix-walk on the client never
+            // matches any node id (which are always absolute), and that touch is silently lost.
+            // path.resolve is a no-op when file_path is already absolute, regardless of cwd.
+            filePaths.push(path.resolve(obj.cwd ?? '', block.input.file_path))
           }
         }
       }

@@ -26,6 +26,17 @@ Like any VS Code extension, this runs as two separate JavaScript contexts that o
 | `debug` | `{ source: 'host', message }` | Any watcher/host-side event worth showing in the in-panel debug log. |
 | `sessionReset` | *(none)* | The watcher switches to a different session file than before — the client clears all visited/hot state so "recently touched" stays scoped to the session currently running. |
 
+**`filePaths` are always absolute strings, matching node ids exactly.** The client's
+`resolveToNodeId` matches a touched file by walking its path up one directory at a time looking for
+a *literal string match* against a node's `fsPath` id — no normalization on the client side. Two
+independent ways this has silently broken (found live, see diary `2026-08-19-1558` and
+`2026-08-19-1825`): the `rootPath` a panel was opened against being an unresolved path that differs
+from what the OS reports once a subprocess actually runs there (e.g. macOS's `/var` ->
+`/private/var` symlink — the caller opening the panel must resolve `rootPath` first); and the model
+itself passing `Read`/`Edit`/`Write` a relative `file_path`, which `extractFilePaths()` now resolves
+against that transcript line's own `cwd` field before emitting it — every line carries one. Both
+failure modes look identical from the outside: the tree renders fine, nothing ever glows.
+
 **Webview → host** (`vscode.postMessage(...)`, handled in `HarnessTreePanel`'s `onDidReceiveMessage`):
 
 | `type` | Payload | Effect |
