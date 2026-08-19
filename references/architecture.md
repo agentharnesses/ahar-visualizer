@@ -26,6 +26,16 @@ Like any VS Code extension, this runs as two separate JavaScript contexts that o
 | `debug` | `{ source: 'host', message }` | Any watcher/host-side event worth showing in the in-panel debug log. |
 | `sessionReset` | *(none)* | The watcher switches to a different session file than before — the client clears all visited/hot state so "recently touched" stays scoped to the session currently running. |
 
+**`step` events cover subagent activity too.** `TranscriptWatcher` doesn't just tail the main
+session `.jsonl` — every tick it also re-globs `<sessionId>/subagents/*.jsonl` (a directory named
+after the main transcript's own filename stem, sibling to it) and tails whatever it finds there the
+same way, via the shared `tailInto()` helper. A dispatched subagent's own `Read`/`Edit`/`Write`
+calls land only in its own file there, never inline in the main transcript — confirmed live (diary
+`2026-08-19-1825`, "what's up with recall"): without this, a run that delegates most of its
+exploration to a subagent looked nearly idle in the overlay even though it wasn't. New subagent
+files can appear mid-run as the agent dispatches more of them, so this re-globs every tick rather
+than caching the list once.
+
 **`filePaths` are always absolute strings, matching node ids exactly.** The client's
 `resolveToNodeId` matches a touched file by walking its path up one directory at a time looking for
 a *literal string match* against a node's `fsPath` id — no normalization on the client side. Two

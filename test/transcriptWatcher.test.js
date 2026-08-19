@@ -96,6 +96,115 @@ test('leaves an already-absolute file_path alone even when cwd is present', () =
   })
 })
 
+test('also tails a subagent transcript, sibling to the main file under <sessionId>/subagents/', () => {
+  // Regression: a dispatched subagent's own Read/Edit/Write calls land in a separate
+  // <sessionId>/subagents/<agent-id>.jsonl file, not inline in the main transcript — confirmed
+  // live, see toprope-agentdev diary 2026-08-19-1825 ("what's up with recall"). Without this, a
+  // run that delegates most of its exploration to a subagent looks nearly idle.
+  const home = fakeHome()
+  withFakeHome(home, () => {
+    const dir = projectDirFor(home, ROOT)
+    const jsonl = path.join(dir, 'sess.jsonl')
+    fs.writeFileSync(jsonl, readToolUseLine('Read', ROOT + '/main-thread.ts') + '\n')
+
+    const subagentsDir = path.join(dir, 'sess', 'subagents')
+    fs.mkdirSync(subagentsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(subagentsDir, 'agent-1.jsonl'),
+      readToolUseLine('Read', ROOT + '/found-by-subagent.ts') + '\n'
+    )
+
+    const events = []
+    const w = new TranscriptWatcher(ROOT, (step, filePaths) => events.push({ step, filePaths }))
+    w['tick']()
+
+    assert.equal(events.length, 1)
+    assert.deepEqual(
+      new Set(events[0].filePaths),
+      new Set([ROOT + '/main-thread.ts', ROOT + '/found-by-subagent.ts'])
+    )
+  })
+})
+
+test('picks up a subagent transcript that appears only on a later tick', () => {
+  const home = fakeHome()
+  withFakeHome(home, () => {
+    const dir = projectDirFor(home, ROOT)
+    const jsonl = path.join(dir, 'sess.jsonl')
+    fs.writeFileSync(jsonl, readToolUseLine('Read', ROOT + '/main-thread.ts') + '\n')
+
+    const events = []
+    const w = new TranscriptWatcher(ROOT, (step, filePaths) => events.push({ step, filePaths }))
+    w['tick']()
+    assert.deepEqual(events[0].filePaths, [ROOT + '/main-thread.ts'])
+
+    // The agent dispatches a subagent mid-run — its transcript file doesn't exist yet at the
+    // moment the watcher started.
+    const subagentsDir = path.join(dir, 'sess', 'subagents')
+    fs.mkdirSync(subagentsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(subagentsDir, 'agent-1.jsonl'),
+      readToolUseLine('Read', ROOT + '/found-later.ts') + '\n'
+    )
+    w['tick']()
+
+    assert.deepEqual(events[1].filePaths, [ROOT + '/found-later.ts'])
+  })
+})
+
+test('tails a subagent transcript incrementally across ticks, like the main transcript', () => {
+  const home = fakeHome()
+  withFakeHome(home, () => {
+    const dir = projectDirFor(home, ROOT)
+    const jsonl = path.join(dir, 'sess.jsonl')
+    fs.writeFileSync(jsonl, '')
+
+    const subagentsDir = path.join(dir, 'sess', 'subagents')
+    fs.mkdirSync(subagentsDir, { recursive: true })
+    const subagentFile = path.join(subagentsDir, 'agent-1.jsonl')
+    fs.writeFileSync(subagentFile, readToolUseLine('Read', ROOT + '/one.ts') + '\n')
+
+    const events = []
+    const w = new TranscriptWatcher(ROOT, (step, filePaths) => events.push({ step, filePaths }))
+    w['tick']()
+    assert.deepEqual(events[0].filePaths, [ROOT + '/one.ts'])
+
+    fs.appendFileSync(subagentFile, readToolUseLine('Read', ROOT + '/two.ts') + '\n')
+    w['tick']()
+    assert.equal(events.length, 2, 'the already-processed first line must not be re-emitted')
+    assert.deepEqual(events[1].filePaths, [ROOT + '/two.ts'])
+  })
+})
+
+test('clears subagent tail state when the watcher switches to a different session file', () => {
+  const home = fakeHome()
+  withFakeHome(home, () => {
+    const dir = projectDirFor(home, ROOT)
+    const jsonlA = path.join(dir, 'sessA.jsonl')
+    fs.writeFileSync(jsonlA, readToolUseLine('Read', ROOT + '/a-main.ts') + '\n')
+    const subagentsDirA = path.join(dir, 'sessA', 'subagents')
+    fs.mkdirSync(subagentsDirA, { recursive: true })
+    fs.writeFileSync(path.join(subagentsDirA, 'agent-1.jsonl'), readToolUseLine('Read', ROOT + '/a-sub.ts') + '\n')
+
+    const events = []
+    const w = new TranscriptWatcher(ROOT, (step, filePaths) => events.push({ step, filePaths }))
+    w['tick']()
+    assert.equal(events[0].step, 2)
+
+    sleepSync(30)
+    const jsonlB = path.join(dir, 'sessB.jsonl')
+    fs.writeFileSync(jsonlB, readToolUseLine('Read', ROOT + '/b-main.ts') + '\n')
+    const subagentsDirB = path.join(dir, 'sessB', 'subagents')
+    fs.mkdirSync(subagentsDirB, { recursive: true })
+    fs.writeFileSync(path.join(subagentsDirB, 'agent-1.jsonl'), readToolUseLine('Read', ROOT + '/b-sub.ts') + '\n')
+    w['tick']()
+
+    const last = events[events.length - 1]
+    assert.equal(last.step, 2, 'step count resets for the new session rather than accumulating')
+    assert.deepEqual(new Set(last.filePaths), new Set([ROOT + '/b-main.ts', ROOT + '/b-sub.ts']))
+  })
+})
+
 test('reads a whole fast exchange that completed before the first tick', () => {
   const home = fakeHome()
   withFakeHome(home, () => {

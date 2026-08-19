@@ -2,9 +2,23 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+/** Per-file tail state: how far into it we've already read, plus any trailing partial line
+ *  carried over from the previous tick. One of these exists per tailed file — the main
+ *  transcript and every subagent transcript discovered under it each get their own. */
+interface TailState {
+  offset: number
+  carry: string
+}
+
 /**
  * Passively tails the active Claude Code session's transcript JSONL file to
  * observe which files the agent reads/edits/writes, without any hooks setup.
+ * Also tails every subagent (Task-tool) transcript dispatched during that
+ * session — see findSubagentFiles — since a subagent's own Read/Edit/Write
+ * calls land in a separate file, not inline in the main one; without this, a
+ * run that delegates most of its exploration to a subagent looks nearly idle
+ * even though it isn't (found live — see toprope-agentdev diary
+ * 2026-08-19-1825, the "what's up with recall" investigation).
  *
  * Caveat (see toprope-agentdev diary, 2026-08-18-1007): the transcript's
  * per-line JSON schema is Claude Code's internal conversation-persistence
@@ -16,8 +30,8 @@ import * as path from 'node:path'
 export class TranscriptWatcher {
   private timer: NodeJS.Timeout | undefined
   private currentFile: string | null = null
-  private offset = 0
-  private carry = ''
+  private mainState: TailState = { offset: 0, carry: '' }
+  private subagentStates = new Map<string, TailState>()
   private step = 0
   private pinnedMissingLogged = false
 
@@ -133,8 +147,8 @@ export class TranscriptWatcher {
       // already be in, not just an approximation of it.
       this.onDebug(`switched to session file: ${latest}`)
       this.currentFile = latest
-      this.offset = 0
-      this.carry = ''
+      this.mainState = { offset: 0, carry: '' }
+      this.subagentStates.clear()
       // A new session file means a genuinely different conversation — reset
       // the step counter so decay is scoped to *this* session's own length,
       // not accumulated across whatever earlier sessions this window ran.
@@ -142,56 +156,99 @@ export class TranscriptWatcher {
       this.onSessionStart()
     }
 
-    let size: number
-    try {
-      size = fs.statSync(this.currentFile).size
-    } catch (err) {
-      this.onDebug(`stat failed for current file ${this.currentFile}: ${String(err)}`)
-      return
-    }
-    if (size <= this.offset) return
-
-    const length = size - this.offset
-    const buf = Buffer.alloc(length)
-    let fd: number
-    try {
-      fd = fs.openSync(this.currentFile, 'r')
-    } catch (err) {
-      this.onDebug(`open failed for ${this.currentFile}: ${String(err)}`)
-      return
-    }
-    try {
-      fs.readSync(fd, buf, 0, length, this.offset)
-    } finally {
-      fs.closeSync(fd)
-    }
-    this.offset = size
-
-    const chunk = this.carry + buf.toString('utf8')
-    const lines = chunk.split('\n')
-    this.carry = lines.pop() ?? ''
-
     // Batch into one onEvent per tick rather than one per line — matters a
     // lot the first time we attach to an existing session with a long
     // history (see the switch-and-replay-from-0 comment above): without
     // batching, catching up on a multi-thousand-line transcript would fire a
     // postMessage per line. currentStep still ends up equal to the true
     // total line count either way, so decay math is unaffected.
-    let touchedAny = false
     const filePaths: string[] = []
-    for (const line of lines) {
-      if (!line.trim()) continue
-      touchedAny = true
-      this.step++
-      filePaths.push(...this.extractFilePaths(line))
+    let linesProcessed = this.tailInto(this.currentFile, this.mainState, filePaths)
+
+    for (const subagentFile of this.findSubagentFiles(this.currentFile)) {
+      let state = this.subagentStates.get(subagentFile)
+      if (!state) {
+        state = { offset: 0, carry: '' }
+        this.subagentStates.set(subagentFile, state)
+        this.onDebug(`discovered subagent transcript: ${subagentFile}`)
+      }
+      linesProcessed += this.tailInto(subagentFile, state, filePaths)
     }
-    if (touchedAny) {
+
+    if (linesProcessed > 0) {
       this.onDebug(
-        `processed ${lines.filter((l) => l.trim()).length} line(s), step now ${this.step}, file touches: ${
+        `processed ${linesProcessed} line(s), step now ${this.step}, file touches: ${
           filePaths.length > 0 ? JSON.stringify(filePaths) : '(none this batch)'
         }`
       )
       this.onEvent(this.step, filePaths)
+    }
+  }
+
+  /** Reads whatever's new since `state.offset` in `filePath`, splits it into complete lines
+   *  (carrying any trailing partial line in `state.carry` across ticks so a line split mid-write
+   *  is never dropped or double-processed), extracts every file-path touch from each into
+   *  `filePaths`, and returns how many complete lines were processed. Shared by the main
+   *  transcript and every subagent transcript under it — both are the exact same
+   *  incrementally-growing-JSONL-file shape, just discovered differently (see
+   *  findLatestJsonl/sessionFileOverride vs. findSubagentFiles). */
+  private tailInto(filePath: string, state: TailState, filePaths: string[]): number {
+    let size: number
+    try {
+      size = fs.statSync(filePath).size
+    } catch (err) {
+      this.onDebug(`stat failed for ${filePath}: ${String(err)}`)
+      return 0
+    }
+    if (size <= state.offset) return 0
+
+    const length = size - state.offset
+    const buf = Buffer.alloc(length)
+    let fd: number
+    try {
+      fd = fs.openSync(filePath, 'r')
+    } catch (err) {
+      this.onDebug(`open failed for ${filePath}: ${String(err)}`)
+      return 0
+    }
+    try {
+      fs.readSync(fd, buf, 0, length, state.offset)
+    } finally {
+      fs.closeSync(fd)
+    }
+    state.offset = size
+
+    const chunk = state.carry + buf.toString('utf8')
+    const lines = chunk.split('\n')
+    state.carry = lines.pop() ?? ''
+
+    let processed = 0
+    for (const line of lines) {
+      if (!line.trim()) continue
+      processed++
+      this.step++
+      filePaths.push(...this.extractFilePaths(line))
+    }
+    return processed
+  }
+
+  /** A session's subagent (Task-tool) transcripts live in `<sessionId>/subagents/*.jsonl` — a
+   *  directory named after the main transcript's own filename stem, sibling to that file, not
+   *  inside it. Confirmed empirically (see diary 2026-08-19-1825): findLatestJsonl's flat,
+   *  non-recursive scan of the project directory never finds these. New files can appear here
+   *  mid-run as the agent dispatches more subagents, so this re-globs every tick rather than
+   *  caching the list once — cheap given a session realistically has a handful of these, not
+   *  thousands. */
+  private findSubagentFiles(mainFile: string): string[] {
+    const sessionId = path.basename(mainFile, '.jsonl')
+    const subagentsDir = path.join(path.dirname(mainFile), sessionId, 'subagents')
+    try {
+      return fs
+        .readdirSync(subagentsDir)
+        .filter((f) => f.endsWith('.jsonl'))
+        .map((f) => path.join(subagentsDir, f))
+    } catch {
+      return [] // no subagent dispatched (yet, or ever) this session — not an error
     }
   }
 
