@@ -4,6 +4,7 @@
   "description": "Visualizes agent-harnesses-standard structure in a workspace.",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "publisher": "agentharnesses",
   "repository": {
     "type": "git",
@@ -91,7 +92,8 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run clean && npm run compile",
+    "clean": "rm -rf out",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "test": "npm run compile && node --test test/*.test.js",
