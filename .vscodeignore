@@ -1,6 +1,10 @@
 .vscode/**
 src/**
+test/**
+references/**
+skills/**
 node_modules/**
 tsconfig.json
+HARNESS.md
 **/.gitignore
 **/*.map

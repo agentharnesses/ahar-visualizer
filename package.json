@@ -2,8 +2,13 @@
   "name": "ahar-visualizer",
   "displayName": "ahar-visualizer",
   "description": "Visualizes agent-harnesses-standard structure in a workspace.",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
+  "publisher": "agentharnesses",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentharnesses/ahar-visualizer.git"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -89,11 +94,13 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "npm run compile && node --test test/*.test.js"
+    "test": "npm run compile && node --test test/*.test.js",
+    "package": "vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
     "typescript": "^5.4.0"
   }
 }
