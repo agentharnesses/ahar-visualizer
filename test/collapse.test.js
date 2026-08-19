@@ -93,7 +93,7 @@ test('double-clicking a file opens it instead of toggling anything', () => {
 test('a touch inside a collapsed subtree still registers, and the collapsed node\'s bar reflects it', () => {
   const w = runWebview(NODES)
   w.dblclickNode('/root/a')
-  assert.equal(w.collapseIndicatorOpacity('/root/a'), 0, 'nothing touched yet, bar should be off')
+  assert.equal(w.collapseIndicatorOpacity('/root/a'), 0.55, 'nothing touched yet, arrow should sit at its dim baseline')
 
   // x7 is hidden (not rendered) but the touch must still be tracked —
   // freshness lives in a plain JS Map keyed by id, entirely independent of

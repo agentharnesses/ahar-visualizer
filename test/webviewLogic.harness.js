@@ -16,7 +16,20 @@ const vm = require('node:vm')
 
 const SRC_PATH = path.join(__dirname, '..', 'src', 'treePanel.ts')
 
-function extractScript(fakeNodes) {
+// Effectively "off": thresholds high enough that no fixture used in the
+// existing tests could ever trigger auto-collapse, so every test written
+// before the auto-collapse feature existed keeps its "everything renders by
+// default" assumption without needing to know about config at all. Tests
+// that specifically exercise auto-collapse pass their own small config via
+// runWebview's second argument.
+const DISABLED_COLLAPSE_CONFIG = {
+  maxDepth: 1e9,
+  maxNodesBeforeCollapse: 1e9,
+  maxChildrenBeforeCollapse: 1e9,
+  maxNodesOnExpand: 1e9
+}
+
+function extractScript(fakeNodes, fakeConfig, fakeHarnessNodes) {
   const src = fs.readFileSync(SRC_PATH, 'utf8')
   const startMarker = '<script nonce="${nonce}">'
   const start = src.indexOf(startMarker) + startMarker.length
@@ -25,11 +38,16 @@ function extractScript(fakeNodes) {
     throw new Error('Could not find <script> block in treePanel.ts — extraction markers may be stale')
   }
   let script = src.slice(start, end)
-  const marker = 'const nodes = ${data};'
-  if (!script.includes(marker)) {
-    throw new Error('Could not find node-data injection point in treePanel.ts — extraction markers may be stale')
+  const nodesMarker = 'const nodes = ${data};'
+  const harnessNodesMarker = 'const harnessNodes = ${harnessData};'
+  const configMarker = 'const config = ${configData};'
+  if (!script.includes(nodesMarker) || !script.includes(harnessNodesMarker) || !script.includes(configMarker)) {
+    throw new Error('Could not find node-data/harness-data/config injection point in treePanel.ts — extraction markers may be stale')
   }
-  return script.replace(marker, 'const nodes = ' + JSON.stringify(fakeNodes) + ';')
+  script = script.replace(nodesMarker, 'const nodes = ' + JSON.stringify(fakeNodes) + ';')
+  script = script.replace(harnessNodesMarker, 'const harnessNodes = ' + JSON.stringify(fakeHarnessNodes || []) + ';')
+  script = script.replace(configMarker, 'const config = ' + JSON.stringify(fakeConfig || DISABLED_COLLAPSE_CONFIG) + ';')
+  return script
 }
 
 function makeEl(tag) {
@@ -113,8 +131,8 @@ function makeEl(tag) {
  *  handles for poking at it: dispatching 'step'/'debug' messages and reading
  *  back glow state via the data-id / data-child-id attributes set on
  *  elements. */
-function runWebview(fakeNodes) {
-  const script = extractScript(fakeNodes)
+function runWebview(fakeNodes, fakeConfig, fakeHarnessNodes) {
+  const script = extractScript(fakeNodes, fakeConfig, fakeHarnessNodes)
   const byIdMap = {}
   const messageListeners = []
 
@@ -133,7 +151,18 @@ function runWebview(fakeNodes) {
       }
     },
     acquireVsCodeApi: () => ({ postMessage: (m) => postedMessages.push(m) }),
+    // A no-op, same as fitToView()'s own animation frame — real panning math
+    // needs a real window (see HARNESS.md's Testing section), so goTo()'s
+    // centerOn()/animateTransform() never actually runs its animation step
+    // here. performance.now() still needs to exist, though: animateTransform
+    // calls it unconditionally before ever reaching requestAnimationFrame.
     requestAnimationFrame: () => {},
+    performance: { now: () => Date.now() },
+    // Also a no-op: Go To/Isolate's ephemeral flash/phantom elements schedule
+    // their own removal via setTimeout(). Never firing it is fine here — the
+    // tests below only assert on the synchronous state changes (selection,
+    // collapsed set), never on whether a flash element has faded out yet.
+    setTimeout: () => {},
     console
   }
   const postedMessages = []
@@ -172,6 +201,27 @@ function runWebview(fakeNodes) {
     return byIdMap.nodeLayer.children.find((c) => c.attrs['data-id'] === nodeId)
   }
 
+  /** A node's on-screen x: its own translate(x,y) composed with the
+   *  #viewport group's translate(tx,ty) scale(s) transform — the same math
+   *  the browser itself would apply. Used to confirm a node's screen
+   *  position stays fixed across a re-render, independent of whatever its
+   *  underlying layout x happened to become. */
+  function nodeScreenX(nodeId) {
+    const g = nodeGroupById(nodeId)
+    assert.ok(g, 'no rendered node found for id ' + nodeId)
+    const nodeMatch = /translate\(([-\d.]+),/.exec(g.attrs.transform || '')
+    assert.ok(nodeMatch, 'node ' + nodeId + ' has no translate() transform')
+    const localX = Number(nodeMatch[1])
+
+    const viewportTransform = byIdMap.viewport ? byIdMap.viewport.attrs.transform || '' : ''
+    const txMatch = /translate\(([-\d.]+),/.exec(viewportTransform)
+    const scaleMatch = /scale\(([-\d.]+)\)/.exec(viewportTransform)
+    const tx = txMatch ? Number(txMatch[1]) : 0
+    const scale = scaleMatch ? Number(scaleMatch[1]) : 1
+
+    return tx + localX * scale
+  }
+
   function nodeVisited(nodeId) {
     const g = nodeGroupById(nodeId)
     assert.ok(g, 'no rendered node found for id ' + nodeId)
@@ -196,17 +246,79 @@ function runWebview(fakeNodes) {
     return byIdMap.edgeLayer.children.length
   }
 
+  /** Count of ephemeral flash/phantom elements currently in flashLayer —
+   *  Go To/Isolate's highlight, never anything persistent. setTimeout is a
+   *  no-op in this harness (see the sandbox above), so these never actually
+   *  time out and remove themselves mid-test; the count reflects exactly
+   *  what one goTo()/isolateNode() call created. */
+  function flashElementCount() {
+    return byIdMap.flashLayer ? byIdMap.flashLayer.children.length : 0
+  }
+
+  /** Reads whether a static (non-tree) DOM element — a toolbar button,
+   *  panel, or container referenced by id anywhere in the script — currently
+   *  has a given CSS class, e.g. hasClass('debugLog', 'collapsed'). Elements
+   *  are created lazily on first getElementById() call, same as the real
+   *  DOM, so this only works once the script has actually referenced the
+   *  id. */
+  /** Overrides the fake geometry a stubbed element reports back — real
+   *  layout (getBoundingClientRect/getBBox) doesn't exist in this VM
+   *  sandbox, so anything that depends on actual on-screen size (fitToView,
+   *  chiefly) needs its inputs faked explicitly per-test. */
+  function setElementRect(elementId, rect) {
+    const el = byIdMap[elementId] || (byIdMap[elementId] = makeEl('div'))
+    el.getBoundingClientRect = () => rect
+  }
+  function setElementBBox(elementId, bbox) {
+    const el = byIdMap[elementId] || (byIdMap[elementId] = makeEl('div'))
+    el.getBBox = () => bbox
+  }
+
+  /** Reads back the #viewport group's current translate(tx,ty) scale(s)
+   *  transform — the same string updateTransform() writes on every pan/
+   *  zoom/fit change. */
+  function viewportTransform() {
+    const t = (byIdMap.viewport && byIdMap.viewport.attrs.transform) || ''
+    const txMatch = /translate\(([-\d.]+),([-\d.]+)\)/.exec(t)
+    const scaleMatch = /scale\(([-\d.]+)\)/.exec(t)
+    return {
+      tx: txMatch ? Number(txMatch[1]) : 0,
+      ty: txMatch ? Number(txMatch[2]) : 0,
+      scale: scaleMatch ? Number(scaleMatch[1]) : 1
+    }
+  }
+
+  function hasClass(elementId, className) {
+    const el = byIdMap[elementId]
+    assert.ok(el, 'no element with id ' + elementId + ' has been referenced yet')
+    return el.classList.contains(className)
+  }
+
   function isCollapsedNode(nodeId) {
     const g = nodeGroupById(nodeId)
     assert.ok(g, 'no rendered node found for id ' + nodeId)
     return g.classList.contains('collapsed')
   }
 
+  /** True if nodeId's rendered <g> currently carries the 'selected' class —
+   *  set by clickNode()/goTo() alike, so this works as the read side for
+   *  both. */
+  function isSelectedNode(nodeId) {
+    const g = nodeGroupById(nodeId)
+    assert.ok(g, 'no rendered node found for id ' + nodeId)
+    return g.classList.contains('selected')
+  }
+
+  // The collapsed-node indicator is a single arrow ('collapse-arrow') whose
+  // own opacity tracks freshness — this reads that opacity, same signal the
+  // old plain bar used to expose under the name 'collapse-indicator'. Falls
+  // back to the CSS baseline (0.55, unvisited) when no inline style is set.
   function collapseIndicatorOpacity(nodeId) {
     const g = nodeGroupById(nodeId)
     assert.ok(g, 'no rendered node found for id ' + nodeId)
-    const bar = g.children.find((c) => c.attrs.class === 'collapse-indicator')
-    return bar ? Number(bar.style.opacity) : null
+    const arrow = g.children.find((c) => c.attrs.class === 'collapse-arrow')
+    if (!arrow) return null
+    return arrow.style.opacity === '' ? 0.55 : Number(arrow.style.opacity)
   }
 
   /** Simulates double-clicking a currently-rendered node — dispatches
@@ -230,9 +342,10 @@ function runWebview(fakeNodes) {
     for (const cb of listeners) cb({ target })
   }
 
-  /** Simulates clicking a button inside the currently-rendered info panel
-   *  (e.g. showInfo()'s dynamically-created "Open File" / "Collapse
-   *  subtree" buttons), by id. */
+  /** Simulates clicking a button by id — works both for buttons inside the
+   *  currently-rendered info panel (e.g. showInfo()'s dynamically-created
+   *  "Open File" / "Collapse subtree" buttons) and for static toolbar
+   *  buttons (zoom, refresh, collapse-to-depth, expand-1-layer, settings). */
   function clickInfoButton(buttonId) {
     const b = byIdMap[buttonId]
     assert.ok(b, 'no button with id ' + buttonId + ' has been created yet — is the info panel showing it?')
@@ -241,11 +354,33 @@ function runWebview(fakeNodes) {
     for (const cb of listeners) cb({})
   }
 
+  /** Finds a "Harnesses" navigator row by the harness id it was built from
+   *  (set via row.setAttribute('data-id', id) in renderHarnessList()). */
+  function harnessRow(id) {
+    const body = byIdMap.harnessListBody
+    if (!body) return null
+    return body.children.find((c) => c.attrs['data-id'] === id) || null
+  }
+
+  /** Simulates clicking a "Harnesses" navigator row's Go To (action='goto')
+   *  or Isolate (action='isolate') button — the same code path a real click
+   *  on that row's 🎯/⛶ button goes through. */
+  function clickHarnessAction(id, action) {
+    const row = harnessRow(id)
+    assert.ok(row, 'no harness-list row found for id ' + id)
+    const btn = row.children.find((c) => c.attrs['data-action'] === action)
+    assert.ok(btn, 'no ' + action + ' button found on the row for ' + id)
+    const listeners = btn._listeners.click || []
+    assert.ok(listeners.length > 0, action + ' button for ' + id + ' has no click listener registered')
+    for (const cb of listeners) cb({})
+  }
+
   return {
     sendStep,
     sendDebug,
     sendSessionReset,
     nodeGlowOpacity,
+    nodeScreenX,
     edgeGlowOpacity,
     debugLogLines,
     nodeVisited,
@@ -253,13 +388,22 @@ function runWebview(fakeNodes) {
     isRendered,
     renderedNodeIds,
     renderedEdgeCount,
+    flashElementCount,
     isCollapsedNode,
+    isSelectedNode,
     collapseIndicatorOpacity,
+    hasClass,
+    setElementRect,
+    setElementBBox,
+    viewportTransform,
     dblclickNode,
     clickNode,
     clickInfoButton,
+    clickButton: clickInfoButton,
+    harnessRow,
+    clickHarnessAction,
     postedMessages
   }
 }
 
-module.exports = { runWebview, extractScript, makeEl }
+module.exports = { runWebview, extractScript, makeEl, DISABLED_COLLAPSE_CONFIG }

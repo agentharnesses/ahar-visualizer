@@ -112,17 +112,20 @@ function detectLeafType(dir: string): string | null {
  * The name every routing file directly inside a directory must use is NOT
  * that directory's own name — it's the name of whichever ancestor-or-self
  * directory sits immediately below the nearest harness-root boundary (the
- * overall root, or a nested ancestor with its own HARNESS.md), propagated
- * unchanged through every nesting level beneath that boundary. E.g.
- * skills/maintenance/'s routing file is SKILLS.md (inherited from skills/,
- * the boundary child), not MAINTENANCE.md — until a nested HARNESS.md resets
- * the boundary and propagation starts over from whatever sits directly below
- * *that*. Mirrors find_bucket_name() in the agent-harnesses skill's
- * disclose.py — kept in sync by hand, see the module comment above.
+ * overall root, or a nested harness — a directory with its own HARNESS.md),
+ * propagated unchanged through every nesting level beneath that boundary.
+ * E.g. skills/maintenance/'s routing file is SKILLS.md (inherited from
+ * skills/, the top-level directory), not MAINTENANCE.md — until a nested
+ * harness resets the boundary and propagation starts over from whatever
+ * sits directly below *that*. See the "Nested Harnesses" section of
+ * vendor/agentharnesses/docs/specification.mdx for the spec-level writeup,
+ * and find_top_level_dir_name() in the agent-harnesses skill's disclose.py
+ * for the equivalent Python implementation — kept in sync by hand, see the
+ * module comment above.
  */
-function classifyFile(name: string, bucketName: string, parentLeafType: string | null): HarnessKind {
+function classifyFile(name: string, topLevelDirName: string, parentLeafType: string | null): HarnessKind {
   if (name === 'HARNESS.md') return 'harness-md'
-  const routingName = `${bucketName.toUpperCase()}.md`
+  const routingName = `${topLevelDirName.toUpperCase()}.md`
   if (name === routingName) return 'routing'
   if (parentLeafType && name === `${parentLeafType.toUpperCase()}.md`) return 'leaf-descriptor'
   return 'file'
@@ -131,7 +134,7 @@ function classifyFile(name: string, bucketName: string, parentLeafType: string |
 export function buildHarnessIndex(rootPath: string): HarnessIndex {
   const index: HarnessIndex = new Map()
 
-  function scanDir(dirPath: string, name: string, bucketName: string): IndexEntry {
+  function scanDir(dirPath: string, name: string, topLevelDirName: string): IndexEntry {
     const leafType = detectLeafType(dirPath)
     const isHarnessRoot = fs.existsSync(path.join(dirPath, 'HARNESS.md'))
     const kind: HarnessKind = isHarnessRoot ? 'harness-root' : leafType ? 'leaf' : 'group'
@@ -161,15 +164,15 @@ export function buildHarnessIndex(rootPath: string): HarnessIndex {
     for (const entry of entries) {
       if (entry.isDirectory()) {
         if (SKIP_DIR_NAMES.has(entry.name)) continue
-        // A harness-root boundary resets the bucket: its direct children
-        // each become the fresh bucket name for their own subtree, rather
-        // than inheriting the parent's.
-        const childBucketName = isHarnessRoot ? entry.name : bucketName
-        const childEntry = scanDir(path.join(dirPath, entry.name), entry.name, childBucketName)
+        // A harness-root boundary resets the top-level directory: each of
+        // its direct children becomes its own fresh top-level directory for
+        // its own subtree, rather than inheriting the parent's.
+        const childTopLevelDirName = isHarnessRoot ? entry.name : topLevelDirName
+        const childEntry = scanDir(path.join(dirPath, entry.name), entry.name, childTopLevelDirName)
         children.push(childEntry.node)
         if (childEntry.relevant) anyChildRelevant = true
       } else {
-        const fileKind = classifyFile(entry.name, bucketName, leafType)
+        const fileKind = classifyFile(entry.name, topLevelDirName, leafType)
         const fileNode: HarnessNode = {
           fsPath: path.join(dirPath, entry.name),
           name: entry.name,

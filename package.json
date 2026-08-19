@@ -1,6 +1,6 @@
 {
-  "name": "ahar-vsvis",
-  "displayName": "ahar-vsvis",
+  "name": "ahar-visualizer",
+  "displayName": "ahar-visualizer",
   "description": "Visualizes agent-harnesses-standard structure in a workspace.",
   "version": "0.0.1",
   "private": true,
@@ -11,20 +11,79 @@
   "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aharVisualizerContainer",
+          "title": "ahar-visualizer",
+          "icon": "media/activity-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "aharVisualizerContainer": [
+        {
+          "id": "aharVisualizer.sidebar",
+          "name": "ahar-visualizer",
+          "type": "webview"
+        }
+      ]
+    },
     "commands": [
       {
-        "command": "aharVsvis.refresh",
+        "command": "aharVisualizer.refresh",
         "title": "Refresh",
         "icon": "$(refresh)",
-        "category": "ahar-vsvis"
+        "category": "ahar-visualizer"
       },
       {
-        "command": "aharVsvis.openTreeVisualization",
+        "command": "aharVisualizer.openTreeVisualization",
         "title": "Open Tree Visualization",
         "icon": "$(type-hierarchy)",
-        "category": "ahar-vsvis"
+        "category": "ahar-visualizer"
+      },
+      {
+        "command": "aharVisualizer.openSettings",
+        "title": "Open Settings",
+        "icon": "$(gear)",
+        "category": "ahar-visualizer"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "ahar-visualizer",
+      "properties": {
+        "aharVisualizer.maxDepth": {
+          "type": "number",
+          "default": 6,
+          "minimum": 0,
+          "description": "A directory at exactly this depth from the harness root (root itself is depth 0) becomes the collapse boundary when the tree first loads or refreshes — it stays visible, but nothing deeper than it does, until expanded."
+        },
+        "aharVisualizer.maxNodesBeforeCollapse": {
+          "type": "number",
+          "default": 400,
+          "minimum": 1,
+          "description": "If the fully-expanded tree would show more nodes than this, deeper directories are automatically collapsed (deepest first) until the visible count is back under this limit."
+        },
+        "aharVisualizer.maxChildrenBeforeCollapse": {
+          "type": "number",
+          "default": 50,
+          "minimum": 1,
+          "description": "Any directory with more direct file/child nodes than this starts collapsed, regardless of its depth."
+        },
+        "aharVisualizer.maxNodesOnExpand": {
+          "type": "number",
+          "default": 200,
+          "minimum": 1,
+          "description": "Expanding a collapsed directory only reveals as much of its subtree as fits under this many nodes; anything beyond that stays collapsed so one click can't dump a huge subtree onto the canvas at once."
+        },
+        "aharVisualizer.rescanIntervalMs": {
+          "type": "number",
+          "default": 400,
+          "minimum": 50,
+          "description": "How often (in milliseconds) to re-scan for the most recently active Claude Code session and switch to it if it's changed. Lower is more responsive; higher is cheaper on a repo with a lot of session history."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

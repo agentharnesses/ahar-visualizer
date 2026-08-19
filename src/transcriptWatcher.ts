@@ -19,14 +19,6 @@ export class TranscriptWatcher {
   private offset = 0
   private carry = ''
   private step = 0
-  private watcherStartMs = 0
-  // Filenames permanently excluded by the birthtime cutoff. A file's
-  // birthtime never changes once created, so once a name lands here it can
-  // be skipped without ever stat-ing it again — without this, every tick
-  // (every 400ms, for as long as the panel stays open) would re-stat every
-  // historical session file in the project directory forever, which only
-  // gets worse the longer a repo has been in use.
-  private readonly rejectedNames = new Set<string>()
 
   constructor(
     private readonly rootPath: string,
@@ -36,26 +28,23 @@ export class TranscriptWatcher {
      *  file than before — including the very first one. Lets the webview
      *  scope "visited" state to the current session specifically, rather
      *  than accumulating across every session this window ever runs. */
-    private readonly onSessionStart: () => void = () => {}
+    private readonly onSessionStart: () => void = () => {},
+    /** How often to re-scan the project's transcript directory for a more
+     *  up-to-date session (ms). Configurable via aharVisualizer.rescanIntervalMs
+     *  since a tighter interval trades CPU for lower latency picking up a
+     *  brand-new session, and a looser one is cheaper on a large repo. */
+    private readonly rescanIntervalMs: number = 400
   ) {}
 
   start(): void {
-    // Only ever follow sessions created after this watcher started — a repo
-    // can easily have more than one `claude` session writing into the same
-    // project directory at once (e.g. the session actively developing this
-    // extension, plus whatever session you start in the Extension
-    // Development Host's own integrated terminal to test it). Picking
-    // "whichever file has the latest mtime" is unusable in that situation:
-    // a long-running, continuously-active session's mtime wins essentially
-    // always, permanently starving out a newer session someone opened to
-    // actually test with. Scoping to "created since I started watching"
-    // makes the watcher track the session that belongs to *this* window.
-    this.watcherStartMs = Date.now()
-    this.onDebug(
-      `watcher started · root=${this.rootPath} · projectDir=${this.projectDir()} · cutoff=${new Date(this.watcherStartMs).toISOString()}`
-    )
+    // Always follow whichever session file in the project directory is most
+    // recently modified — the most recently *active* one — re-checking on
+    // every tick so switching to an even-more-recently-touched session (a
+    // brand new one, or the user tabbing back to an older window) just
+    // happens on its own, no restart required.
+    this.onDebug(`watcher started · root=${this.rootPath} · projectDir=${this.projectDir()}`)
     this.tick()
-    this.timer = setInterval(() => this.tick(), 400)
+    this.timer = setInterval(() => this.tick(), this.rescanIntervalMs)
   }
 
   stop(): void {
@@ -80,33 +69,23 @@ export class TranscriptWatcher {
     }
     let latest: string | null = null
     let latestMtime = 0
-    const newlyRejected: string[] = []
+    const statFailures: string[] = []
     for (const name of entries) {
-      if (this.rejectedNames.has(name)) continue // already known-permanently-excluded; skip the stat entirely
       const full = path.join(this.projectDir(), name)
       try {
         const stat = fs.statSync(full)
-        const birth = stat.birthtimeMs || stat.ctimeMs
-        if (birth < this.watcherStartMs) {
-          this.rejectedNames.add(name)
-          newlyRejected.push(`${name} (birth=${new Date(birth).toISOString()}, predates cutoff)`)
-          continue
-        }
         if (stat.mtimeMs > latestMtime) {
           latestMtime = stat.mtimeMs
           latest = full
         }
       } catch (err) {
-        // Not cached as rejected — a transient stat failure (e.g. a file
-        // disappearing mid-scan) shouldn't be treated as permanent.
-        newlyRejected.push(`${name} (stat failed: ${String(err)})`)
+        // A transient stat failure (e.g. a file disappearing mid-scan)
+        // just drops that one file from consideration this tick.
+        statFailures.push(`${name} (stat failed: ${String(err)})`)
       }
     }
-    // Only log when something actually changed (new files seen since the
-    // last tick) — logging "still nothing" every 400ms forever is exactly
-    // the kind of unbounded growth the debug log shouldn't have either.
-    if (newlyRejected.length > 0) {
-      this.onDebug(`rejected ${newlyRejected.length} new file(s) (predate this watcher): ${newlyRejected.join('; ')}`)
+    if (statFailures.length > 0) {
+      this.onDebug(`${statFailures.length} file(s) failed to stat this tick: ${statFailures.join('; ')}`)
     }
     return latest
   }

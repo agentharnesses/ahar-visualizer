@@ -16,7 +16,7 @@ function write(root, relPath, content = '') {
   fs.writeFileSync(full, content)
 }
 
-test('a routing file is named after the top-level bucket, not its own immediate directory', () => {
+test('a routing file is named after the top-level directory, not its own immediate directory', () => {
   // This is the exact bug reported by hand: skills/maintenance/'s routing
   // file must be SKILLS.md (inherited from skills/, the directory
   // immediately below the harness root), never MAINTENANCE.md.
@@ -33,9 +33,9 @@ test('a routing file is named after the top-level bucket, not its own immediate 
   assert.equal(maintenanceDir.node.hasRoutingChild, true)
 })
 
-test('a file matching its own immediate directory name, but not the bucket, is NOT routing', () => {
+test('a file matching its own immediate directory name, but not the top-level directory, is NOT routing', () => {
   // The exact real-world case: references/diary/DIARY.md matches diary's own
-  // name, but the bucket is "references" (diary's ancestor), so it should
+  // name, but the top-level directory is "references" (diary's ancestor), so it should
   // be classified as a plain file, not routing.
   const root = tmpRepo()
   write(root, 'HARNESS.md')
@@ -44,13 +44,13 @@ test('a file matching its own immediate directory name, but not the bucket, is N
 
   const index = buildHarnessIndex(root)
   const diaryMd = index.get(path.join(root, 'references/diary/DIARY.md'))
-  assert.equal(diaryMd.node.kind, 'file', 'DIARY.md does not match the "references" bucket name')
+  assert.equal(diaryMd.node.kind, 'file', 'DIARY.md does not match the "references" top-level directory name')
 
   const diaryDir = index.get(path.join(root, 'references/diary'))
   assert.equal(diaryDir.node.hasRoutingChild, false, 'diary/ has no valid routing file at all')
 })
 
-test('renaming to match the bucket name (REFERENCES.md) fixes the classification', () => {
+test('renaming to match the top-level directory name (REFERENCES.md) fixes the classification', () => {
   const root = tmpRepo()
   write(root, 'HARNESS.md')
   write(root, 'references/REFERENCES.md')
@@ -64,13 +64,13 @@ test('renaming to match the bucket name (REFERENCES.md) fixes the classification
   assert.equal(diaryDir.node.hasRoutingChild, true)
 })
 
-test('a nested HARNESS.md resets the bucket for its own descendants', () => {
+test('a nested HARNESS.md resets the top-level directory for its own descendants', () => {
   const root = tmpRepo()
   write(root, 'HARNESS.md')
   write(root, 'skills/SKILLS.md')
   write(root, 'skills/sub-harness/HARNESS.md')
   write(root, 'skills/sub-harness/docs/DOCS.md')
-  // Also confirm the OLD bucket name (skills/SKILLS.md-style) no longer
+  // Also confirm the OLD top-level directory name (skills/SKILLS.md-style) no longer
   // applies once a nested harness root is crossed.
   write(root, 'skills/sub-harness/docs/SKILLS.md')
 
@@ -79,7 +79,7 @@ test('a nested HARNESS.md resets the bucket for its own descendants', () => {
   assert.equal(docsDir.node.hasRoutingChild, true)
 
   const docsDocsMd = index.get(path.join(root, 'skills/sub-harness/docs/DOCS.md'))
-  assert.equal(docsDocsMd.node.kind, 'routing', 'DOCS.md matches the reset bucket ("docs")')
+  assert.equal(docsDocsMd.node.kind, 'routing', 'DOCS.md matches the reset top-level directory ("docs")')
 
   const staleSkillsMd = index.get(path.join(root, 'skills/sub-harness/docs/SKILLS.md'))
   assert.equal(staleSkillsMd.node.kind, 'file', 'SKILLS.md no longer applies past the nested harness-root boundary')
@@ -88,7 +88,7 @@ test('a nested HARNESS.md resets the bucket for its own descendants', () => {
   assert.equal(subHarnessDir.node.kind, 'harness-root')
 })
 
-test('leaf-descriptor classification (SKILL.md) is unaffected by the bucket-name fix', () => {
+test('leaf-descriptor classification (SKILL.md) is unaffected by the top-level-directory-name fix', () => {
   const root = tmpRepo()
   write(root, 'HARNESS.md')
   write(root, 'skills/SKILLS.md')
@@ -105,7 +105,7 @@ test('leaf-descriptor classification (SKILL.md) is unaffected by the bucket-name
   assert.equal(leafDir.node.leafType, 'skill')
 })
 
-test('HARNESS.md itself is always classified as harness-md regardless of bucket name', () => {
+test('HARNESS.md itself is always classified as harness-md regardless of top-level directory name', () => {
   const root = tmpRepo()
   write(root, 'HARNESS.md')
   write(root, 'skills/SKILLS.md')

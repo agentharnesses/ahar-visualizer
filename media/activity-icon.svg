@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <mask id="aharBoxMask">
+    <rect x="3" y="2" width="18" height="14" rx="2.5" fill="white"/>
+    <text x="12" y="12.2" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="6.6" font-weight="700" fill="black">ahar</text>
+  </mask>
+  <rect x="3" y="2" width="18" height="14" rx="2.5" fill="currentColor" mask="url(#aharBoxMask)"/>
+  <path d="M3 18 L21 18 L12 22.5 Z" fill="currentColor" opacity="0.6"/>
+</svg>

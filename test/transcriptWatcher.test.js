@@ -50,7 +50,6 @@ test('reads a whole fast exchange that completed before the first tick', () => {
 
     const events = []
     const w = new TranscriptWatcher(ROOT, (step, filePaths) => events.push({ step, filePaths }))
-    w['watcherStartMs'] = 0 // don't exercise the birthtime cutoff in this test
     w['tick']()
 
     assert.equal(events.length, 1)
@@ -68,7 +67,6 @@ test('buffers a partial line across ticks instead of dropping or double-processi
 
     const events = []
     const w = new TranscriptWatcher(ROOT, (step, filePaths) => events.push({ step, filePaths }))
-    w['watcherStartMs'] = 0
     w['tick']() // attaches to the empty file, no events yet
     assert.equal(events.length, 0)
 
@@ -98,7 +96,6 @@ test('batches every line from one tick into a single onEvent call', () => {
 
     const events = []
     const w = new TranscriptWatcher(ROOT, (step, filePaths) => events.push({ step, filePaths }))
-    w['watcherStartMs'] = 0
     w['tick']()
 
     assert.equal(events.length, 1, 'three lines discovered in one tick should be one batched event')
@@ -107,33 +104,37 @@ test('batches every line from one tick into a single onEvent call', () => {
   })
 })
 
-test('ignores a session file that predates the watcher, even if it is the most recently modified', () => {
+test('follows the most recently modified session even if it already existed before the watcher started', () => {
   const home = fakeHome()
   withFakeHome(home, () => {
     const dir = projectDirFor(home, ROOT)
-    const oldFile = path.join(dir, 'old-long-running-session.jsonl')
-    fs.writeFileSync(oldFile, readToolUseLine('Read', ROOT + '/should-not-be-seen.ts') + '\n')
+    const existingFile = path.join(dir, 'already-running-session.jsonl')
+    fs.writeFileSync(existingFile, readToolUseLine('Read', ROOT + '/already-open.ts') + '\n')
 
-    sleepSync(30) // ensure a real, filesystem-observable time gap
+    sleepSync(30) // ensure a real, filesystem-observable time gap before start()
 
     const events = []
     const w = new TranscriptWatcher(ROOT, (step, filePaths) => events.push({ step, filePaths }))
-    w.start() // real start(): stamps watcherStartMs to now, after oldFile's birthtime
+    w.start() // the session file already existed before this call
     w.stop() // cancel the interval; we'll drive ticks manually from here
 
-    // Touch the old file so it's *also* the most-recently-modified — this is
-    // exactly the failure mode being fixed: mtime alone would pick it.
-    fs.appendFileSync(oldFile, readToolUseLine('Read', ROOT + '/also-not-seen.ts') + '\n')
-    w['tick']()
-    assert.equal(events.length, 0, 'a session that predates the watcher must never be followed')
+    assert.equal(
+      events.length,
+      1,
+      'a session that was already the most recently active one should be picked up immediately, not ignored'
+    )
+    assert.deepEqual(events[0].filePaths, [ROOT + '/already-open.ts'])
 
     sleepSync(30)
-    const newFile = path.join(dir, 'new-session.jsonl')
-    fs.writeFileSync(newFile, readToolUseLine('Read', ROOT + '/should-be-seen.ts') + '\n')
+    const newerFile = path.join(dir, 'newer-session.jsonl')
+    fs.writeFileSync(newerFile, readToolUseLine('Read', ROOT + '/newer.ts') + '\n')
     w['tick']()
 
-    assert.equal(events.length, 1)
-    assert.deepEqual(events[0].filePaths, [ROOT + '/should-be-seen.ts'])
+    assert.deepEqual(
+      events.pop().filePaths,
+      [ROOT + '/newer.ts'],
+      'a regular rescan should switch to whichever session is now most recently modified'
+    )
   })
 })
 
@@ -195,53 +196,38 @@ test('fires onSessionStart on every session switch and resets the step counter',
   })
 })
 
-test('never re-stats a file once it has been rejected by the birthtime cutoff', () => {
+test('finding the latest session scans every .jsonl file in the project directory on each tick', () => {
+  // There's no longer a rejection cache to short-circuit repeat stats (the
+  // old birthtime-cutoff mechanism that provided one was removed along with
+  // the cutoff itself — the watcher now needs every file's current mtime on
+  // every tick to correctly always follow whichever session is most
+  // recently active). This just pins that every file really does get
+  // checked, since a future change accidentally reintroducing skips would
+  // silently break "switch to a session that predates the watcher" again.
   const home = fakeHome()
   withFakeHome(home, () => {
     const dir = projectDirFor(home, ROOT)
 
-    // A pile of historical sessions, all predating the watcher — simulates
-    // a repo with a lot of session history already sitting in its project
-    // directory before this panel was ever opened.
-    const oldFiles = []
-    for (let i = 0; i < 15; i++) {
-      const f = path.join(dir, 'old-' + i + '.jsonl')
-      fs.writeFileSync(f, readToolUseLine('Read', ROOT + '/old.ts') + '\n')
-      oldFiles.push(f)
+    const files = []
+    for (let i = 0; i < 5; i++) {
+      const f = path.join(dir, 'sess-' + i + '.jsonl')
+      fs.writeFileSync(f, readToolUseLine('Read', ROOT + '/x.ts') + '\n')
+      files.push(f)
     }
-    // A real, unambiguous gap before the watcher's cutoff timestamp — without
-    // this, file creation and `Date.now()` can land in the same millisecond,
-    // and birthtime-vs-cutoff comparisons at that resolution aren't reliably
-    // ordered (same class of race the "ignores a session file that predates
-    // the watcher" test above already accounts for).
-    sleepSync(30)
 
     const w = new TranscriptWatcher(ROOT, () => {})
-    // start() itself runs an initial tick, which is enough to see and
-    // reject every old file at least once — run a couple more up front so
-    // the cache is fully warmed before measurement starts, since the exact
-    // tick on which each file first gets seen isn't the point of this test.
     w.start()
     w.stop()
-    w['tick']()
-    w['tick']()
 
     const realStatSync = fs.statSync
-    let statCallsOnOldFiles = 0
+    const statted = new Set()
     fs.statSync = (p, ...rest) => {
-      if (oldFiles.includes(p)) statCallsOnOldFiles++
+      if (files.includes(p)) statted.add(p)
       return realStatSync(p, ...rest)
     }
     try {
       w['tick']()
-      w['tick']()
-      w['tick']()
-
-      assert.equal(
-        statCallsOnOldFiles,
-        0,
-        'once cached as rejected, an old file must never be stat-ed again on any later tick'
-      )
+      assert.equal(statted.size, files.length, 'every session file should be considered on each tick')
     } finally {
       fs.statSync = realStatSync
     }

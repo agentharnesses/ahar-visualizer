@@ -44,7 +44,7 @@ test('reading a plain root-level file in a fresh nested session lights it up in 
       (step, filePaths) => wireMessages.push({ step, filePaths }),
       (message) => debugMessages.push(message)
     )
-    watcher.start() // stamps watcherStartMs; nothing exists yet, so this is a no-op tick
+    watcher.start() // nothing exists yet, so the initial tick is a no-op
     watcher.stop() // drive ticks manually for determinism
 
     // Simulate the nested terminal session: user asks a question, Claude
