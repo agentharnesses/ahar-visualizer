@@ -60,7 +60,12 @@ export class TranscriptWatcher {
   }
 
   private projectDir(): string {
-    const slug = this.rootPath.replace(/\//g, '-')
+    // Every non-alphanumeric character maps to '-', not just '/' — confirmed empirically (a
+    // real `claude -p` run from a cwd containing underscores and a dot produced a project dir
+    // with every one of those replaced too, not just the path separators). A slash-only
+    // replacement silently breaks for any cwd containing another special character — which
+    // e.g. macOS's own temp directory does by default (/var/folders/.../6v5gb2jx..._x3c0000gn).
+    const slug = this.rootPath.replace(/[^a-zA-Z0-9]/g, '-')
     return path.join(os.homedir(), '.claude', 'projects', slug)
   }
 

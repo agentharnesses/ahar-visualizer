@@ -37,6 +37,28 @@ function readToolUseLine(name, filePath) {
 
 const ROOT = '/fake/workspace/root'
 
+test('project dir slug replaces every non-alphanumeric character, not just /', () => {
+  // Regression: confirmed empirically that claude's real project-dir slug rule replaces every
+  // non-alphanumeric character (underscores, dots, etc.), not just path separators — a
+  // slash-only replacement silently breaks for a rootPath containing any other special
+  // character, which e.g. macOS's own temp directory does by default.
+  const home = fakeHome()
+  withFakeHome(home, () => {
+    const rootWithSpecialChars = '/private/var/folders/q4/abc_def.gn/T/x'
+    const expectedSlug = '-private-var-folders-q4-abc-def-gn-T-x'
+    const dir = path.join(home, '.claude', 'projects', expectedSlug)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'sess.jsonl'), readToolUseLine('Read', rootWithSpecialChars + '/file.ts') + '\n')
+
+    const events = []
+    const w = new TranscriptWatcher(rootWithSpecialChars, (step, filePaths) => events.push({ step, filePaths }))
+    w['tick']()
+
+    assert.equal(events.length, 1, 'watcher should find the session under the correctly-slugged project dir')
+    assert.deepEqual(events[0].filePaths, [rootWithSpecialChars + '/file.ts'])
+  })
+})
+
 test('reads a whole fast exchange that completed before the first tick', () => {
   const home = fakeHome()
   withFakeHome(home, () => {
