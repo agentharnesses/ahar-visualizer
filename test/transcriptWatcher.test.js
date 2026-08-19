@@ -196,6 +196,68 @@ test('fires onSessionStart on every session switch and resets the step counter',
   })
 })
 
+test('sessionFileOverride: does not fire events while the pinned file does not exist, and logs the wait only once', () => {
+  const home = fakeHome()
+  withFakeHome(home, () => {
+    projectDirFor(home, ROOT) // project dir exists, but the pinned file does not
+    const pinned = path.join(home, '.claude', 'projects', ROOT.replace(/\//g, '-'), 'pinned.jsonl')
+
+    const events = []
+    const sessionStarts = []
+    const debugMessages = []
+    const w = new TranscriptWatcher(
+      ROOT,
+      (step, filePaths) => events.push({ step, filePaths }),
+      (message) => debugMessages.push(message),
+      () => sessionStarts.push(true),
+      400,
+      pinned
+    )
+    w['tick']()
+    w['tick']()
+    w['tick']()
+
+    assert.equal(events.length, 0, 'no events should fire while the pinned file does not exist')
+    assert.equal(sessionStarts.length, 0)
+    assert.equal(
+      debugMessages.filter((m) => m.includes('not found yet')).length,
+      1,
+      'the "not found yet" debug line should log once, not once per tick'
+    )
+  })
+})
+
+test('sessionFileOverride: picks up the pinned file as soon as it appears and ignores other sessions', () => {
+  const home = fakeHome()
+  withFakeHome(home, () => {
+    const dir = projectDirFor(home, ROOT)
+    const pinned = path.join(dir, 'pinned.jsonl')
+    const other = path.join(dir, 'other.jsonl')
+    // A more-recently-active *other* session exists — the pin must ignore it.
+    fs.writeFileSync(other, readToolUseLine('Read', ROOT + '/should-be-ignored.ts') + '\n')
+
+    const events = []
+    const sessionStarts = []
+    const w = new TranscriptWatcher(
+      ROOT,
+      (step, filePaths) => events.push({ step, filePaths }),
+      () => {},
+      () => sessionStarts.push(true),
+      400,
+      pinned
+    )
+    w['tick']()
+    assert.equal(events.length, 0, 'still nothing until the pinned file itself appears')
+
+    fs.writeFileSync(pinned, readToolUseLine('Read', ROOT + '/pinned.ts') + '\n')
+    w['tick']()
+
+    assert.equal(events.length, 1)
+    assert.deepEqual(events[0].filePaths, [ROOT + '/pinned.ts'])
+    assert.equal(sessionStarts.length, 1, 'the pinned file appearing should fire onSessionStart once')
+  })
+})
+
 test('finding the latest session scans every .jsonl file in the project directory on each tick', () => {
   // There's no longer a rejection cache to short-circuit repeat stats (the
   // old birthtime-cutoff mechanism that provided one was removed along with

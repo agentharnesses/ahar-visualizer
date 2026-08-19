@@ -19,6 +19,7 @@ export class TranscriptWatcher {
   private offset = 0
   private carry = ''
   private step = 0
+  private pinnedMissingLogged = false
 
   constructor(
     private readonly rootPath: string,
@@ -33,7 +34,14 @@ export class TranscriptWatcher {
      *  up-to-date session (ms). Configurable via aharVisualizer.rescanIntervalMs
      *  since a tighter interval trades CPU for lower latency picking up a
      *  brand-new session, and a looser one is cheaper on a large repo. */
-    private readonly rescanIntervalMs: number = 400
+    private readonly rescanIntervalMs: number = 400,
+    /** When set, skip auto-follow entirely and tail exactly this file instead
+     *  of whichever session is most recently active — used by panels opened
+     *  against a specific "chat continuum" for side-by-side comparison
+     *  testing. Retries every tick if the file doesn't exist yet, so a panel
+     *  can be opened before its target `claude` CLI session has started
+     *  writing its transcript. */
+    private readonly sessionFileOverride: string | undefined = undefined
   ) {}
 
   start(): void {
@@ -91,7 +99,20 @@ export class TranscriptWatcher {
   }
 
   private tick(): void {
-    const latest = this.findLatestJsonl()
+    let latest: string | null
+    if (this.sessionFileOverride) {
+      if (!fs.existsSync(this.sessionFileOverride)) {
+        if (!this.pinnedMissingLogged) {
+          this.onDebug(`pinned session file not found yet, retrying: ${this.sessionFileOverride}`)
+          this.pinnedMissingLogged = true
+        }
+        return
+      }
+      this.pinnedMissingLogged = false
+      latest = this.sessionFileOverride
+    } else {
+      latest = this.findLatestJsonl()
+    }
     if (!latest) return
 
     if (latest !== this.currentFile) {

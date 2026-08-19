@@ -9,14 +9,24 @@ import { TranscriptWatcher } from './transcriptWatcher'
 // be read directly from outside the Extension Development Host — e.g. `tail
 // -f /tmp/ahar-visualizer-debug.log` — while iterating on the live-glow pipeline,
 // without needing to relay screenshots of the in-panel log back and forth.
-const DEBUG_LOG_PATH = '/tmp/ahar-visualizer-debug.log'
+// This is only used by the default panel — custom panels (opened for
+// side-by-side comparison testing) get their own path, see debugLogPathFor,
+// so two concurrently-open panels don't truncate/interleave each other's log.
+const DEFAULT_DEBUG_LOG_PATH = '/tmp/ahar-visualizer-debug.log'
 
-function appendDebugLog(message: string): void {
-  try {
-    fs.appendFileSync(DEBUG_LOG_PATH, `[${new Date().toISOString()}] ${message}\n`)
-  } catch {
-    // Best-effort only; never let logging itself break the extension.
-  }
+function debugLogPathFor(rootPath: string, label: string | undefined, isDefault: boolean): string {
+  if (isDefault) return DEFAULT_DEBUG_LOG_PATH
+  const slug = (label ?? path.basename(rootPath) ?? 'panel').replace(/[^a-zA-Z0-9._-]+/g, '-')
+  return `/tmp/ahar-visualizer-debug-${slug}.log`
+}
+
+/** Default panel title for a custom (non-default) panel when no explicit
+ *  label is given — distinguishes side-by-side panels by directory (and
+ *  pinned session, if any) instead of every tab reading "Harness Tree". */
+function deriveCustomTitle(rootPath: string, sessionFile: string | undefined): string {
+  const dirName = path.basename(rootPath) || rootPath
+  if (!sessionFile) return dirName
+  return `${dirName} · ${path.basename(sessionFile, '.jsonl')}`
 }
 
 interface VizNode {
@@ -144,9 +154,15 @@ export function getNonce(): string {
 
 export class HarnessTreePanel {
   static current: HarnessTreePanel | undefined
+  /** Independently-tracked panels opened via createCustom() — for
+   *  side-by-side comparison testing against a specific directory and/or
+   *  pinned transcript file. Never reused/revealed like `current`; each
+   *  createCustom() call always creates a new entry here. */
+  static readonly customPanels = new Set<HarnessTreePanel>()
 
   private readonly panel: vscode.WebviewPanel
   private readonly rootPath: string
+  private readonly debugLogPath: string
   private readonly disposables: vscode.Disposable[] = []
   private readonly watcher: TranscriptWatcher
   private refreshDebounceTimer: NodeJS.Timeout | undefined
@@ -170,16 +186,42 @@ export class HarnessTreePanel {
     HarnessTreePanel.current?.refresh()
   }
 
-  private constructor(panel: vscode.WebviewPanel, rootPath: string) {
+  /** Opens an additional, independently-tracked panel against an explicit
+   *  directory and (optionally) a specific transcript file to pin rather
+   *  than auto-following the most recently active session — for viewing two
+   *  directory/session combinations side by side. Always creates a new
+   *  panel; never reuses/reveals an existing one, since two custom panels
+   *  may legitimately target the same rootPath with different sessionFiles. */
+  static createCustom(options: { rootPath: string; sessionFile?: string; label?: string }): void {
+    const { rootPath, sessionFile, label } = options
+    const title = label ?? deriveCustomTitle(rootPath, sessionFile)
+    const panel = vscode.window.createWebviewPanel(
+      'aharVisualizer.treeVisualization',
+      title,
+      vscode.ViewColumn.Beside,
+      { enableScripts: true, retainContextWhenHidden: true }
+    )
+    const instance = new HarnessTreePanel(panel, rootPath, sessionFile, label, false)
+    HarnessTreePanel.customPanels.add(instance)
+  }
+
+  private constructor(
+    panel: vscode.WebviewPanel,
+    rootPath: string,
+    sessionFile?: string,
+    label?: string,
+    isDefault: boolean = true
+  ) {
     this.panel = panel
     this.rootPath = rootPath
+    this.debugLogPath = debugLogPathFor(rootPath, label, isDefault)
 
     try {
-      fs.writeFileSync(DEBUG_LOG_PATH, '') // fresh log per panel session
+      fs.writeFileSync(this.debugLogPath, '') // fresh log per panel session
     } catch {
       // best-effort
     }
-    appendDebugLog(`panel constructed · rootPath=${rootPath}`)
+    this.appendDebugLog(`panel constructed · rootPath=${rootPath}${sessionFile ? ` · sessionFile=${sessionFile}` : ''}`)
 
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables)
     this.panel.webview.onDidReceiveMessage(
@@ -191,7 +233,7 @@ export class HarnessTreePanel {
         } else if (message.type === 'refresh') {
           this.refresh()
         } else if (message.type === 'clientDebug' && message.message) {
-          appendDebugLog(`[client] ${message.message}`)
+          this.appendDebugLog(`[client] ${message.message}`)
         } else if (message.type === 'openSettings') {
           await vscode.commands.executeCommand('workbench.action.openSettings', 'aharVisualizer')
         }
@@ -220,13 +262,14 @@ export class HarnessTreePanel {
         void this.panel.webview.postMessage({ type: 'step', step, filePaths })
       },
       (message) => {
-        appendDebugLog(`[host] ${message}`)
+        this.appendDebugLog(`[host] ${message}`)
         void this.panel.webview.postMessage({ type: 'debug', source: 'host', message })
       },
       () => {
         void this.panel.webview.postMessage({ type: 'sessionReset' })
       },
-      vscode.workspace.getConfiguration('aharVisualizer').get<number>('rescanIntervalMs', 400)
+      vscode.workspace.getConfiguration('aharVisualizer').get<number>('rescanIntervalMs', 400),
+      sessionFile
     )
     this.watcher.start()
 
@@ -274,8 +317,17 @@ export class HarnessTreePanel {
     void this.panel.webview.postMessage({ type: 'nodesUpdate', nodes, harnessNodes, config: readCollapseConfig() })
   }
 
+  private appendDebugLog(message: string): void {
+    try {
+      fs.appendFileSync(this.debugLogPath, `[${new Date().toISOString()}] ${message}\n`)
+    } catch {
+      // Best-effort only; never let logging itself break the extension.
+    }
+  }
+
   private dispose(): void {
-    HarnessTreePanel.current = undefined
+    if (HarnessTreePanel.current === this) HarnessTreePanel.current = undefined
+    HarnessTreePanel.customPanels.delete(this)
     this.watcher.stop()
     if (this.refreshDebounceTimer) clearTimeout(this.refreshDebounceTimer)
     this.panel.dispose()

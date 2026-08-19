@@ -14,7 +14,7 @@
     "vscode": "^1.90.0"
   },
   "categories": ["Visualization", "Other"],
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": ["onStartupFinished", "onUri"],
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -52,6 +52,11 @@
         "command": "aharVisualizer.openSettings",
         "title": "Open Settings",
         "icon": "$(gear)",
+        "category": "ahar-visualizer"
+      },
+      {
+        "command": "aharVisualizer.openCustomVisualization",
+        "title": "Open Custom Visualization (Advanced)",
         "category": "ahar-visualizer"
       }
     ],
