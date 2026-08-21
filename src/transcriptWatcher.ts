@@ -10,6 +10,124 @@ interface TailState {
   carry: string
 }
 
+// Confirmed live (toprope-agentdev diary 2026-08-20, "digging through the transcript"): across a
+// real run, Bash tool_use calls outnumbered Read calls in every variant, and the dominant Bash
+// verbs were grep/find/head -- genuine file exploration that, before this, was entirely invisible
+// to this overlay (and to traversal-compare's identically-scoped metrics.py) because Read/Edit/
+// Write's structured file_path input has no Bash equivalent -- a Bash tool_use's `command` is one
+// unstructured shell string. Worse, the gap was asymmetric: a with-harness-style run (which
+// explores less broadly, guided more directly) had zero files that were grepped/headed but never
+// separately Read; a no-metaskill run had several -- so the activity overlay was systematically
+// understating exactly the conditions that explore the most via Bash.
+//
+// extractBashPaths is a best-effort heuristic, not a shell parser -- a Bash argument doesn't carry
+// a structured path field the way Read/Edit/Write's does, so this can't be exact by construction.
+// Scoped deliberately narrow to keep false positives low: a candidate token must look like a real
+// filename (a known extension on its last path segment), must not be a glob pattern (contains "*"
+// or "?"), must not be a flag (leading "-"), and must not be a redirect target (immediately after
+// a bare >, >>, or <) -- a Bash-created output file isn't something the sandbox already had, so
+// counting it as a "touch" would conflate exploration with something closer to an edit. A grep
+// *search pattern* argument (e.g. "harnessleaf" in `grep -n harnessleaf file.py`) never matches on
+// its own, since it has no recognized extension. Deliberately kept as a direct reimplementation of
+// traversal-compare's metrics.py, not shared across languages, matching how this file already
+// independently reimplements the metaskill's Python logic elsewhere in this project.
+//
+// find's -name/-iname is a second, real false-positive case, found live (diary 2026-08-20, "still
+// looks sparse" follow-up): `find / -name "claude_runner.py"` uses the filename as an exact-match
+// *search pattern*, not a path to read, but it's syntactically indistinguishable from a genuine
+// path argument (a bare filename with a recognized extension) -- extracted and resolved against
+// cwd it produced a plausible-looking but wrong, nonexistent path (<sandboxRoot>/claude_runner.py
+// instead of the real, deeply-nested file), silently displacing a real touch slot instead of just
+// being a harmless miss. Skipped the same way a redirect target is.
+//
+// A bare KEY=VALUE assignment is a third, found the same way (diary 2026-08-20, "the metaskill is
+// the one exception" verification run): a live transcript had the model heredoc-writing a test
+// .leaf-detectors file whose own *content* included lines like "skill=SKILL.md" and
+// "mcp-server=SKILL.md" -- real .leaf-detectors syntax, not file paths, but VALUE has a recognized
+// extension so the whole "KEY=VALUE" token still passed looksLikeFilePath. A genuine file path
+// essentially never contains a literal "=", so excluding any token with one is a clean, safe guard.
+const KNOWN_FILE_EXTENSIONS = new Set([
+  'py', 'md', 'yaml', 'yml', 'json', 'txt', 'toml', 'cfg', 'ini', 'ts', 'tsx', 'js', 'jsx', 'sh', 'rst',
+])
+const REDIRECT_OPERATORS = new Set(['>', '>>', '<'])
+const PATTERN_TAKING_FLAGS = new Set(['-name', '-iname'])
+
+function looksLikeFilePath(token: string): boolean {
+  if (token.startsWith('-') || token.includes('*') || token.includes('?') || token.includes('=')) return false
+  const basename = token.includes('/') ? token.slice(token.lastIndexOf('/') + 1) : token
+  if (!basename.includes('.')) return false
+  const ext = basename.slice(basename.lastIndexOf('.') + 1).toLowerCase()
+  return KNOWN_FILE_EXTENSIONS.has(ext)
+}
+
+/** Minimal POSIX-ish shell tokenizer: splits on whitespace, honors single/double quotes (quotes
+ *  are stripped, not preserved as literal characters), and unescapes a backslash outside quotes
+ *  or before ", \, $, ` inside double quotes -- close enough to Python's shlex.split(posix=True)
+ *  for the narrow purpose here (isolating a quoted grep pattern from a bare file argument), not a
+ *  full shell grammar. */
+function shellTokenize(segment: string): string[] {
+  const tokens: string[] = []
+  let current = ''
+  let hasToken = false
+  let inSingle = false
+  let inDouble = false
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i]
+    if (inSingle) {
+      if (ch === "'") inSingle = false
+      else current += ch
+      continue
+    }
+    if (inDouble) {
+      if (ch === '"') inDouble = false
+      else if (ch === '\\' && i + 1 < segment.length && '"\\$`'.includes(segment[i + 1])) current += segment[++i]
+      else current += ch
+      continue
+    }
+    if (ch === "'") {
+      inSingle = true
+      hasToken = true
+    } else if (ch === '"') {
+      inDouble = true
+      hasToken = true
+    } else if (ch === '\\' && i + 1 < segment.length) {
+      current += segment[++i]
+      hasToken = true
+    } else if (/\s/.test(ch)) {
+      if (hasToken) {
+        tokens.push(current)
+        current = ''
+        hasToken = false
+      }
+    } else {
+      current += ch
+      hasToken = true
+    }
+  }
+  if (hasToken) tokens.push(current)
+  return tokens
+}
+
+function extractBashPaths(command: string): string[] {
+  const paths: string[] = []
+  for (const segment of command.split(/\|\||&&|[|;]/)) {
+    const tokens = shellTokenize(segment)
+    let skipNext = false
+    for (const tok of tokens) {
+      if (skipNext) {
+        skipNext = false
+        continue
+      }
+      if (REDIRECT_OPERATORS.has(tok) || PATTERN_TAKING_FLAGS.has(tok)) {
+        skipNext = true
+        continue
+      }
+      if (looksLikeFilePath(tok)) paths.push(tok)
+    }
+  }
+  return paths
+}
+
 /**
  * Passively tails the active Claude Code session's transcript JSONL file to
  * observe which files the agent reads/edits/writes, without any hooks setup.
@@ -257,13 +375,16 @@ export class TranscriptWatcher {
     try {
       const obj = JSON.parse(line) as {
         cwd?: string
-        message?: { content?: Array<{ type?: string; name?: string; input?: { file_path?: string } }> }
+        message?: {
+          content?: Array<{ type?: string; name?: string; input?: { file_path?: string; command?: string } }>
+        }
       }
       const content = obj.message?.content
+      const cwd = obj.cwd ?? ''
       if (Array.isArray(content)) {
         for (const block of content) {
+          if (block?.type !== 'tool_use') continue
           if (
-            block?.type === 'tool_use' &&
             (block.name === 'Read' || block.name === 'Edit' || block.name === 'Write') &&
             typeof block.input?.file_path === 'string'
           ) {
@@ -273,7 +394,14 @@ export class TranscriptWatcher {
             // assuming absolute; without this, resolveToNodeId's prefix-walk on the client never
             // matches any node id (which are always absolute), and that touch is silently lost.
             // path.resolve is a no-op when file_path is already absolute, regardless of cwd.
-            filePaths.push(path.resolve(obj.cwd ?? '', block.input.file_path))
+            filePaths.push(path.resolve(cwd, block.input.file_path))
+          } else if (block.name === 'Bash' && typeof block.input?.command === 'string') {
+            // See extractBashPaths' own comment: a Bash tool_use has no structured path field,
+            // just an unstructured shell string, so this is a best-effort heuristic extraction of
+            // real file arguments (grep/find/head/... targets) rather than an exact one.
+            for (const p of extractBashPaths(block.input.command)) {
+              filePaths.push(path.resolve(cwd, p))
+            }
           }
         }
       }

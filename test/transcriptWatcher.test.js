@@ -37,6 +37,12 @@ function readToolUseLine(name, filePath, cwd) {
   return JSON.stringify(obj)
 }
 
+function bashToolUseLine(command, cwd) {
+  const obj = { message: { content: [{ type: 'tool_use', name: 'Bash', input: { command } }] } }
+  if (cwd !== undefined) obj.cwd = cwd
+  return JSON.stringify(obj)
+}
+
 const ROOT = '/fake/workspace/root'
 
 test('project dir slug replaces every non-alphanumeric character, not just /', () => {
@@ -93,6 +99,102 @@ test('leaves an already-absolute file_path alone even when cwd is present', () =
     w['tick']()
 
     assert.deepEqual(events[0].filePaths, [ROOT + '/HARNESS.md'])
+  })
+})
+
+test('extracts a grep target file argument from a Bash command', () => {
+  // Confirmed live (diary 2026-08-20): a real transcript ran
+  // `grep -n "harnessleaf" .claude/skills/agent-harnesses/scripts/disclose.py` and never
+  // separately Read that file — invisible to this overlay before this fix. The search pattern
+  // ("harnessleaf") must NOT be extracted; only the file argument, which has a real extension.
+  const home = fakeHome()
+  withFakeHome(home, () => {
+    const dir = projectDirFor(home, ROOT)
+    const jsonl = path.join(dir, 'sess.jsonl')
+    fs.writeFileSync(jsonl, bashToolUseLine('grep -n "harnessleaf" disclose.py', ROOT) + '\n')
+
+    const events = []
+    const w = new TranscriptWatcher(ROOT, (step, filePaths) => events.push({ step, filePaths }))
+    w['tick']()
+
+    assert.deepEqual(events[0].filePaths, [ROOT + '/disclose.py'])
+  })
+})
+
+test('ignores a Bash command with no path-like arguments', () => {
+  const home = fakeHome()
+  withFakeHome(home, () => {
+    const dir = projectDirFor(home, ROOT)
+    const jsonl = path.join(dir, 'sess.jsonl')
+    fs.writeFileSync(jsonl, bashToolUseLine('ls', ROOT) + '\n')
+
+    const events = []
+    const w = new TranscriptWatcher(ROOT, (step, filePaths) => events.push({ step, filePaths }))
+    w['tick']()
+
+    // The tick still fires (a line was processed, step advances), just with no file paths — same
+    // as any other tool_use this watcher doesn't recognize.
+    assert.deepEqual(events[0].filePaths, [])
+  })
+})
+
+test('ignores a glob pattern and a redirect target in a Bash command', () => {
+  const home = fakeHome()
+  withFakeHome(home, () => {
+    const dir = projectDirFor(home, ROOT)
+    const jsonl = path.join(dir, 'sess.jsonl')
+    // find's "-name *.md" has a recognized extension but is a wildcard, not a real file; the
+    // redirect target isn't something the sandbox already had, so it's closer to a write than an
+    // exploratory read and must not be counted as a touch either.
+    fs.writeFileSync(
+      jsonl,
+      bashToolUseLine('find . -name "*.md"', ROOT) + '\n' + bashToolUseLine('grep -rn TODO foo.py > /tmp/out.txt', ROOT) + '\n'
+    )
+
+    const events = []
+    const w = new TranscriptWatcher(ROOT, (step, filePaths) => events.push({ step, filePaths }))
+    w['tick']()
+
+    assert.deepEqual(events[0].filePaths, [ROOT + '/foo.py'])
+  })
+})
+
+test('ignores a find -name search pattern', () => {
+  // Regression, found live (diary 2026-08-20): find's -name/-iname argument is a search
+  // *pattern*, not a path -- `find / -name "claude_runner.py"` used the filename as an exact
+  // match, syntactically indistinguishable from a real path argument. Extracted and resolved
+  // against cwd it previously produced a plausible-looking but wrong, nonexistent path,
+  // displacing a real touch slot instead of just being a harmless miss.
+  const home = fakeHome()
+  withFakeHome(home, () => {
+    const dir = projectDirFor(home, ROOT)
+    const jsonl = path.join(dir, 'sess.jsonl')
+    fs.writeFileSync(jsonl, bashToolUseLine('find / -name "claude_runner.py" -not -path "*/node_modules/*"', ROOT) + '\n')
+
+    const events = []
+    const w = new TranscriptWatcher(ROOT, (step, filePaths) => events.push({ step, filePaths }))
+    w['tick']()
+
+    assert.deepEqual(events[0].filePaths, [])
+  })
+})
+
+test('ignores a KEY=VALUE assignment whose value looks like a path', () => {
+  // Regression, found live (diary 2026-08-20): a heredoc-written test .leaf-detectors file's own
+  // *content* included lines like "skill=SKILL.md" -- real .leaf-detectors syntax, not a file
+  // path, but the VALUE half has a recognized extension so the whole "KEY=VALUE" token still
+  // looked like a path.
+  const home = fakeHome()
+  withFakeHome(home, () => {
+    const dir = projectDirFor(home, ROOT)
+    const jsonl = path.join(dir, 'sess.jsonl')
+    fs.writeFileSync(jsonl, bashToolUseLine('cat > .leaf-detectors << EOF\nskill=SKILL.md\nEOF', ROOT) + '\n')
+
+    const events = []
+    const w = new TranscriptWatcher(ROOT, (step, filePaths) => events.push({ step, filePaths }))
+    w['tick']()
+
+    assert.deepEqual(events[0].filePaths, [])
   })
 })
 

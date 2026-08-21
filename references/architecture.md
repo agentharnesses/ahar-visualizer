@@ -22,7 +22,7 @@ Like any VS Code extension, this runs as two separate JavaScript contexts that o
 
 | `type` | Payload | Sent when |
 |---|---|---|
-| `step` | `{ step, filePaths }` | `TranscriptWatcher` processes one or more new transcript lines in a tick — `filePaths` are the `Read`/`Edit`/`Write` targets extracted from them. |
+| `step` | `{ step, filePaths }` | `TranscriptWatcher` processes one or more new transcript lines in a tick — `filePaths` are the `Read`/`Edit`/`Write` targets extracted from them, plus paths pulled from `Bash` commands (`grep`/`find`/`head`/...) via a best-effort heuristic (`extractBashPaths`), since a `Bash` `tool_use` has no structured path field, just an unstructured shell string. |
 | `debug` | `{ source: 'host', message }` | Any watcher/host-side event worth showing in the in-panel debug log. |
 | `sessionReset` | *(none)* | The watcher switches to a different session file than before — the client clears all visited/hot state so "recently touched" stays scoped to the session currently running. |
 
