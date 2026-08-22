@@ -32,15 +32,16 @@ function buildLopsidedNodes() {
 test('a nodesUpdate does not reset the legend or harness-navigator open/closed state', () => {
   const w = runWebview(buildLopsidedNodes())
 
+  // Both start collapsed by default; one click each expands them.
   w.clickButton('legendHeader')
   w.clickButton('harnessListHeader')
-  assert.equal(w.hasClass('legendBody', 'collapsed'), true)
-  assert.equal(w.hasClass('harnessListBody', 'collapsed'), true)
+  assert.equal(w.hasClass('legendBody', 'collapsed'), false)
+  assert.equal(w.hasClass('harnessListBody', 'collapsed'), false)
 
   w.sendNodesUpdate(buildLopsidedNodes())
 
-  assert.equal(w.hasClass('legendBody', 'collapsed'), true, 'legend must stay collapsed across a refresh')
-  assert.equal(w.hasClass('harnessListBody', 'collapsed'), true, 'harness navigator must stay collapsed across a refresh')
+  assert.equal(w.hasClass('legendBody', 'collapsed'), false, 'legend must stay expanded across a refresh')
+  assert.equal(w.hasClass('harnessListBody', 'collapsed'), false, 'harness navigator must stay expanded across a refresh')
 })
 
 test('a nodesUpdate preserves a manual collapse/expand decision on an unchanged node', () => {

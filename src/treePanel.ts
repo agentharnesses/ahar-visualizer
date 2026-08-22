@@ -20,6 +20,30 @@ function debugLogPathFor(rootPath: string, label: string | undefined, isDefault:
   return `/tmp/ahar-visualizer-debug-${slug}.log`
 }
 
+/** Reserves a debug log path for one panel's exclusive use, disambiguating
+ *  with a numeric suffix when two concurrently-open panels would otherwise
+ *  compute the same path (e.g. the same root, or the same label, opened
+ *  more than once) — without this, the second panel's constructor would
+ *  truncate the first panel's still-in-use log file out from under it.
+ *  Leaves the common case (one panel per root/label) with its original,
+ *  predictable path, since multi-panel-testing scripts read it by that name. */
+function claimDebugLogPath(basePath: string, claimed: Set<string>): string {
+  if (!claimed.has(basePath)) {
+    claimed.add(basePath)
+    return basePath
+  }
+  const ext = path.extname(basePath)
+  const stem = basePath.slice(0, basePath.length - ext.length)
+  let n = 2
+  let candidate = `${stem}-${n}${ext}`
+  while (claimed.has(candidate)) {
+    n++
+    candidate = `${stem}-${n}${ext}`
+  }
+  claimed.add(candidate)
+  return candidate
+}
+
 /** Default panel title for a custom (non-default) panel when no explicit
  *  label is given — distinguishes side-by-side panels by directory (and
  *  pinned session, if any) instead of every tab reading "Harness Tree". */
@@ -159,6 +183,8 @@ export class HarnessTreePanel {
    *  pinned transcript file. Never reused/revealed like `current`; each
    *  createCustom() call always creates a new entry here. */
   static readonly customPanels = new Set<HarnessTreePanel>()
+  /** Debug log paths currently owned by a live panel — see claimDebugLogPath. */
+  private static readonly claimedDebugLogPaths = new Set<string>()
 
   private readonly panel: vscode.WebviewPanel
   private readonly rootPath: string
@@ -214,7 +240,10 @@ export class HarnessTreePanel {
   ) {
     this.panel = panel
     this.rootPath = rootPath
-    this.debugLogPath = debugLogPathFor(rootPath, label, isDefault)
+    this.debugLogPath = claimDebugLogPath(
+      debugLogPathFor(rootPath, label, isDefault),
+      HarnessTreePanel.claimedDebugLogPaths
+    )
 
     try {
       fs.writeFileSync(this.debugLogPath, '') // fresh log per panel session
@@ -328,6 +357,7 @@ export class HarnessTreePanel {
   private dispose(): void {
     if (HarnessTreePanel.current === this) HarnessTreePanel.current = undefined
     HarnessTreePanel.customPanels.delete(this)
+    HarnessTreePanel.claimedDebugLogPaths.delete(this.debugLogPath)
     this.watcher.stop()
     if (this.refreshDebounceTimer) clearTimeout(this.refreshDebounceTimer)
     this.panel.dispose()
@@ -577,9 +607,6 @@ function renderHtml(nodes: VizNode[], harnessNodes: VizHarnessNode[], collapseCo
     <button id="zoomIn" title="Zoom in">+</button>
     <button id="zoomOut" title="Zoom out">−</button>
     <button id="zoomReset" title="Fit to view">⤢</button>
-  </div>
-  <div class="toolbar-group" id="refreshGroup">
-    <button id="refreshBtn" title="Refresh from disk">⟳</button>
   </div>
   <div class="toolbar-group" id="treeOpsGroup">
     <button id="collapseLayerBtn" title="Collapse the tree's single deepest visible layer">−1</button>
@@ -1640,7 +1667,6 @@ function renderHtml(nodes: VizNode[], harnessNodes: VizHarnessNode[], collapseCo
   document.getElementById('zoomIn').addEventListener('click', () => { scale = Math.min(scale * 1.2, 5); updateTransform(); });
   document.getElementById('zoomOut').addEventListener('click', () => { scale = Math.max(scale / 1.2, 0.1); updateTransform(); });
   document.getElementById('zoomReset').addEventListener('click', fitToView);
-  document.getElementById('refreshBtn').addEventListener('click', () => vscode.postMessage({ type: 'refresh' }));
   document.getElementById('collapseLayerBtn').addEventListener('click', collapseOneLayerEverywhere);
   document.getElementById('expandLayerBtn').addEventListener('click', expandOneLayerEverywhere);
   document.getElementById('settingsBtn').addEventListener('click', () => vscode.postMessage({ type: 'openSettings' }));
@@ -1649,12 +1675,20 @@ function renderHtml(nodes: VizNode[], harnessNodes: VizHarnessNode[], collapseCo
   const legendHeader = document.getElementById('legendHeader');
   const legendBody = document.getElementById('legendBody');
   const legendToggle = document.getElementById('legendToggle');
+  // Starts tucked away, like the debug log below — set here (not just in
+  // markup) so it's a single source of truth, matching that panel's pattern.
+  legend.classList.add('collapsed');
+  legendBody.classList.add('collapsed');
+  legendToggle.textContent = '+';
   legendHeader.addEventListener('click', () => {
     const collapsedNow = legendBody.classList.toggle('collapsed');
     legend.classList.toggle('collapsed', collapsedNow);
     legendToggle.textContent = collapsedNow ? '+' : '−';
   });
 
+  harnessList.classList.add('collapsed');
+  harnessListBody.classList.add('collapsed');
+  harnessListToggle.textContent = '+';
   harnessListHeader.addEventListener('click', () => {
     const collapsedNow = harnessListBody.classList.toggle('collapsed');
     harnessList.classList.toggle('collapsed', collapsedNow);

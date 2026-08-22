@@ -2,7 +2,7 @@
   "name": "ahar-visualizer",
   "displayName": "ahar-visualizer",
   "description": "Visualizes agent-harnesses-standard structure in a workspace.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "license": "Apache-2.0",
   "publisher": "agentharnesses",

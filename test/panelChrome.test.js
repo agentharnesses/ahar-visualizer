@@ -9,16 +9,19 @@ function buildMinimalNodes() {
   return [{ id: '/root', parentId: null, name: 'root', isDirectory: true, kind: 'harness-root' }]
 }
 
-test('toggling the legend header shrinks the whole legend, not just its body', () => {
+test('the legend starts collapsed, and toggling its header expands/re-collapses the whole legend, not just its body', () => {
   const w = runWebview(buildMinimalNodes())
 
-  w.clickButton('legendHeader')
-  assert.equal(w.hasClass('legendBody', 'collapsed'), true)
-  assert.equal(w.hasClass('legend', 'collapsed'), true, 'the outer #legend container also shrinks when collapsed')
+  assert.equal(w.hasClass('legendBody', 'collapsed'), true, 'starts collapsed by default')
+  assert.equal(w.hasClass('legend', 'collapsed'), true, 'the outer #legend container also starts collapsed')
 
   w.clickButton('legendHeader')
   assert.equal(w.hasClass('legendBody', 'collapsed'), false)
   assert.equal(w.hasClass('legend', 'collapsed'), false)
+
+  w.clickButton('legendHeader')
+  assert.equal(w.hasClass('legendBody', 'collapsed'), true)
+  assert.equal(w.hasClass('legend', 'collapsed'), true)
 })
 
 test('the debug log toggle button shows/hides the debug log panel', () => {

@@ -24,8 +24,11 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('aharVisualizer.refresh', () => {
       HarnessTreePanel.refreshIfOpen()
     }),
+    // Always opens a brand-new, independently-tracked panel (never reveals/
+    // refreshes an existing one) so the button can be clicked repeatedly to
+    // have several tree visualizations open side by side at once.
     vscode.commands.registerCommand('aharVisualizer.openTreeVisualization', () => {
-      HarnessTreePanel.createOrShow(rootPath)
+      HarnessTreePanel.createCustom({ rootPath })
     }),
     vscode.commands.registerCommand('aharVisualizer.openSettings', () => {
       void vscode.commands.executeCommand('workbench.action.openSettings', 'aharVisualizer')
