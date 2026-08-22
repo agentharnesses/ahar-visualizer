@@ -19,6 +19,21 @@ Not yet on the VS Code Marketplace — install from a `.vsix` release instead:
 
 No auto-update — a new version means downloading and re-installing the new `.vsix`.
 
+## Updating
+
+There's no in-place upgrade path, so updating means uninstalling the current version, then
+installing the new `.vsix` as above:
+
+1. Uninstall the current version:
+   ```bash
+   code --uninstall-extension agentharnesses.ahar-visualizer
+   ```
+   or, from inside VS Code: Extensions view → find **ahar-visualizer** → gear icon →
+   **Uninstall**.
+2. Download the new `.vsix` from [Releases](https://github.com/agentharnesses/ahar-visualizer/releases)
+   and install it (see [Installation](#installation) above).
+3. Reload VS Code if it doesn't prompt you to automatically.
+
 ## How it works
 
 ahar-visualizer runs two independent pipelines side by side:
